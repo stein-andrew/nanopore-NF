@@ -2,12 +2,14 @@
 # Push a Stage 1 outdir to another cluster with rsync, then verify it there.
 #
 #   scripts/transfer.sh <stage1_outdir> <user@host:/dest/dir> [--with-ubam]
-#   scripts/transfer.sh results/run1 stein.an@login.explorer.northeastern.edu:/scratch/stein.an/ont-pipeline/results/run1
+#   scripts/transfer.sh results/run1 stein.an@<explorer-login-host>:/scratch/stein.an/ont-pipeline/results/run1
 #
 # The uBAMs are left behind unless --with-ubam is given: Stage 2 only reads the
 # aligned BAMs, which already carry MM/ML (and mv/pt for RNA).
 #
 # Safe to re-run: --partial resumes interrupted files and finished ones are skipped.
+# rsync skips on size + mtime, so after a checksum failure resend with
+#   RSYNC_OPTS=--checksum scripts/transfer.sh ...
 # Verification is `md5sum -c checksums.md5` at the destination, over the same
 # relative paths analysis_samplesheet.csv uses.
 set -euo pipefail
@@ -36,12 +38,18 @@ else
 fi
 
 # -a keeps times, so a re-run skips files that already arrived intact.
-rsync -a --partial --info=progress2 "${EXCLUDE[@]}" "$SRC/" "$DEST/"
+# shellcheck disable=SC2086
+rsync -a --partial --info=progress2 ${RSYNC_OPTS:-} "${EXCLUDE[@]}" "$SRC/" "$DEST/"
 
 echo "verifying checksums at $DEST"
+# Explicit if: set -e does not stop on a failure on the left of `&&`.
 if [[ -n $HOST ]]; then
-    ssh "$HOST" "cd '$DIR' && md5sum -c --quiet checksums.md5" && echo "all BAMs verified"
+    verify=(ssh "$HOST" "cd '$DIR' && md5sum -c --quiet checksums.md5")
 else
-    (cd "$DIR" && md5sum -c --quiet checksums.md5) && echo "all BAMs verified"
+    verify=(bash -c "cd '$DIR' && md5sum -c --quiet checksums.md5")
 fi
+if ! "${verify[@]}"; then
+    die "checksum mismatch at $DEST -- resend with: RSYNC_OPTS=--checksum $0 $*"
+fi
+echo "all BAMs verified"
 echo "Stage 2 input: $DIR/analysis_samplesheet.csv"

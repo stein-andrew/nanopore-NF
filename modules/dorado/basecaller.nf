@@ -31,7 +31,8 @@ process DORADO_BASECALLER {
         ${params.dorado_args} \\
         > ${meta.run_id}.ubam.bam
 
-    samtools quickcheck -v ${meta.run_id}.ubam.bam
+    # -u: a uBAM has no @SQ lines, which quickcheck otherwise treats as a failure
+    samtools quickcheck -u -v ${meta.run_id}.ubam.bam
     """
 
     stub:

@@ -12,7 +12,7 @@
 //   ...        any other columns (condition, replicate, ...) ride along to Stage 2
 
 include { DORADO_BASECALLER }             from './modules/dorado/basecaller.nf'
-include { SAMTOOLS_FAIDX; MINIMAP2_INDEX } from './modules/align/build_index.nf'
+include { REFERENCE_INDEX }               from './modules/align/build_index.nf'
 include { MINIMAP2 }                      from './modules/align/minimap2.nf'
 include { PBRUN_MINIMAP2 }                from './modules/align/pbrun_minimap2.nf'
 include { DONOR_NAMESORT; MODKIT_REPAIR; COPY_TAGS } from './modules/bam/tag_transfer.nf'
@@ -32,9 +32,7 @@ workflow {
 
     // ---- references: FASTA + cached .fai and .mmi --------------------------------
     ch_fasta = channel.fromList(align_to.collect { name -> tuple(name, file(params.genomes[name], checkIfExists: true)) })
-    ch_ref = ch_fasta
-        .join(SAMTOOLS_FAIDX(ch_fasta))
-        .join(MINIMAP2_INDEX(ch_fasta, params.mm2_index_args))     // (ref_name, fasta, fai, mmi)
+    ch_ref = ch_fasta.join(REFERENCE_INDEX(ch_fasta, params.mm2_index_args))   // (ref_name, fasta, fai, mmi)
 
     // ---- basecall -----------------------------------------------------------------
     DORADO_BASECALLER(channel.fromList(rows), mod_models)
