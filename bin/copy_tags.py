@@ -10,8 +10,9 @@ pbrun minimap2 drops MM/ML when reading a uBAM (--in-bam), and segfaults on the
 comment lines). Since the GPU alignment is byte-identical to the CPU one, the
 cheapest correct fix is to align without tags and graft them back afterwards.
 
-Unlike `modkit repair`, this can carry any tag, which matters for RNA: Clair3-RNA
-wants the move table (mv) and IsoQuant wants the poly-A estimate (pt).
+Unlike `modkit repair`, this can carry any tag: the move table (mv) for Clair3's
+dwell-time models (DNA, `--enable_dwell_time`), the poly-A estimate (pt) for
+IsoQuant (RNA), and qs.
 
 Tags are copied verbatim from the source BAM -- no FASTQ text round-trip, so
 nothing can be silently truncated or reformatted on the way through.
@@ -26,7 +27,8 @@ aligned file came from that uBAM.
 Hard-clipped records (supplementary alignments without minimap2 -Y) carry a
 truncated SEQ, so MM/ML/MN/mv copied verbatim would point past the end of it.
 Those tags are skipped on such records and counted; everything else is copied.
-Use `modkit repair` instead when supplementary alignments matter (the DNA arm).
+Use `modkit repair` for MM/ML when supplementary alignments matter (the DNA arm);
+the DNA arm then runs this for qs and mv, which Clair3 reads on primaries only.
 
 Usage
 -----
@@ -106,6 +108,9 @@ def main():
     ap.add_argument("--out", required=True, help="output BAM (coordinate sorted, indexed)")
     ap.add_argument("--tags", default=DEFAULT_TAGS,
                     help=f"comma-separated tags to copy (default: {DEFAULT_TAGS})")
+    ap.add_argument("--ubam-name-sorted", action="store_true",
+                    help="--ubam is already name-sorted by this samtools (e.g. the "
+                         "modkit repair donor): skip sorting it again")
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--samtools", default="samtools")
     ap.add_argument("--tmpdir", default=os.environ.get("TMPDIR", "/tmp"))
@@ -126,9 +131,12 @@ def main():
 
     workdir = tempfile.mkdtemp(prefix="tagxfer_", dir=args.tmpdir)
     try:
-        ns_ubam = os.path.join(workdir, "ubam.ns.bam")
         ns_aln = os.path.join(workdir, "aln.ns.bam")
-        name_sort(samtools, args.ubam, ns_ubam, args.threads, workdir, keep_tags=",".join(names))
+        if args.ubam_name_sorted:
+            ns_ubam = args.ubam      # unwanted tags are dropped per record below
+        else:
+            ns_ubam = os.path.join(workdir, "ubam.ns.bam")
+            name_sort(samtools, args.ubam, ns_ubam, args.threads, workdir, keep_tags=",".join(names))
         name_sort(samtools, args.aligned, ns_aln, args.threads, workdir)
 
         # Aligned side keeps its header (-h); tag side is records only.

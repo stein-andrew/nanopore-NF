@@ -15,7 +15,7 @@ include { DORADO_BASECALLER }             from './modules/dorado/basecaller.nf'
 include { REFERENCE_INDEX }               from './modules/align/build_index.nf'
 include { MINIMAP2 }                      from './modules/align/minimap2.nf'
 include { PBRUN_MINIMAP2 }                from './modules/align/pbrun_minimap2.nf'
-include { DONOR_NAMESORT; MODKIT_REPAIR; COPY_TAGS } from './modules/bam/tag_transfer.nf'
+include { DONOR_NAMESORT; MODKIT_REPAIR; COPY_DONOR_TAGS; COPY_TAGS } from './modules/bam/tag_transfer.nf'
 include { MERGE_RUNS; BAM_QC }            from './modules/bam/merge_qc.nf'
 
 workflow {
@@ -52,14 +52,27 @@ workflow {
         ch_untagged = PBRUN_MINIMAP2.out.bam
         ch_logs = PBRUN_MINIMAP2.out.log
         if( params.tag_method == 'modkit_repair' ) {
-            ch_donor = DONOR_NAMESORT(ch_ubam).map { meta, donor -> tuple(meta.run_id, donor) }
+            // modkit repair restores MM/ML/MN; the rest of `carry` (qs, mv) is then
+            // copied from the same name-sorted donor.
+            def donor_extra = carry.tokenize(',').findAll { t -> !(t in ['MM', 'ML', 'MN']) }
+            ch_donor = DONOR_NAMESORT(ch_ubam, (['MM', 'ML', 'MN'] + donor_extra).join(','))
+                .map { meta, donor -> tuple(meta.run_id, donor) }
             ch_in = ch_untagged
                 .map { meta, ref_name, bam, bai -> tuple(meta.run_id, meta, ref_name, bam, bai) }
                 .combine(ch_donor, by: 0)
                 .map { _run_id, meta, ref_name, bam, bai, donor -> tuple(meta, ref_name, bam, bai, donor, bamPrefix(meta, ref_name)) }
-            MODKIT_REPAIR(ch_in)
-            ch_tagged = MODKIT_REPAIR.out.bam
+            MODKIT_REPAIR(ch_in, donor_extra ? '.repaired' : '')
             ch_logs = ch_logs.mix(MODKIT_REPAIR.out.log)
+            if( donor_extra ) {
+                ch_repaired = MODKIT_REPAIR.out.bam
+                    .map { meta, ref_name, bam, bai -> tuple(meta.run_id, meta, ref_name, bam, bai) }
+                    .combine(ch_donor, by: 0)
+                    .map { _run_id, meta, ref_name, bam, bai, donor -> tuple(meta, ref_name, bam, bai, donor, bamPrefix(meta, ref_name)) }
+                ch_tagged = COPY_DONOR_TAGS(ch_repaired, donor_extra.join(',')).bam
+            }
+            else {
+                ch_tagged = MODKIT_REPAIR.out.bam
+            }
         }
         else {
             ch_in = ch_untagged

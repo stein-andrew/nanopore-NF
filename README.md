@@ -37,11 +37,14 @@ scripts/aicr_launch.sh /scratch/$USER/ont-pipeline/runs/run1 \
     basecall.nf -profile aicr,dna --input runs.csv --outdir /scratch/$USER/ont-pipeline/results/run1
 ```
 
-Dorado runs on `--gpu_queue` (default `b200-batch`, which can queue for days; the
-RTX PRO 6000 nodes are usually sooner: `--gpu_queue rtx-batch --gpu_type rtx_pro_6000`).
+Dorado runs on `--gpu_queue` (default `b200-batch`; for the RTX PRO 6000 nodes use
+`--gpu_queue rtx-batch --gpu_type rtx_pro_6000`). SLURM's start-time estimates on
+AICR are unreliable, so don't choose a queue by them.
 Parabricks runs on `--pbrun_queue` (default `b200-devel`): it is CPU-bound, so each
 job gets 1 GPU and 32 CPUs, and a flowcell aligns in about 1-1.5 h (a second GPU was
-no faster in benchmarks). AICR `/scratch` purges files older than 30 days.
+no faster in benchmarks). Images and indexes live under
+`/work/neu/p2026_0018_neu/ont-pipeline`, because AICR `/scratch` purges files older
+than 30 days.
 
 ## Profiles
 
@@ -49,7 +52,7 @@ Pick one data type and one cluster.
 
 | Profile | Sets |
 |---|---|
-| `dna` | dorado 2.1.2, `dna_r10.4.1_e8.2_400bps_hac@v6.0.0`, mods `5mCG_5hmCG@v1 6mA@v1`; `lr:hq`; GRCh38 **and** HG002; keep supplementaries (`-F 260`); `modkit repair` |
+| `dna` | dorado 2.1.2, `dna_r10.4.1_e8.2_400bps_hac@v6.0.0`, mods `5mCG_5hmCG@v1 6mA@v1`; moves (for Clair3 `_with_mv`); `lr:hq`; GRCh38 **and** HG002; keep supplementaries (`-F 260`); `modkit repair` + `copy_tags.py` |
 | `rna` | dorado 1.3.0, `rna004_130bps_sup@v5.2.0`, mods `inosine_m6A_2OmeA pseU_2OmeU m5C_2OmeC 2OmeG` (@v1); moves + poly-A; `splice -uf -k14`; GRCh38; primary only (`-F 2308`); `copy_tags.py` |
 | `explorer` | SLURM queues, reference paths, images on `/scratch/stein.an` |
 | `aicr` | SLURM: GPU steps on `b200-batch` (switchable), CPU steps on `cpu`; Parabricks aligner; references under `/work/neu/p2026_0018_neu` |
@@ -84,10 +87,16 @@ after Parabricks the tags are grafted back from the uBAM:
   (content is unchanged) and drops records it cannot place unambiguously; in testing
   those were only short supplementary segments in tandem repeats (6 of 1,176 records,
   no primaries). The counts are printed and the log is published under `logs/`.
+  `qs` and `mv` are then copied verbatim from the same name-sorted donor by
+  `copy_tags.py`, which skips `mv` on hard-clipped records. So `mv` sits on the
+  primary alignments, which is all Clair3's dwell-time models read
+  (`r1041_e82_400bps_hac_v600_with_mv --enable_dwell_time`; Clair3 skips
+  supplementaries).
 * **RNA → `bin/copy_tags.py`.** Only primary alignments survive `-F 2308`, so SEQ
-  is never clipped and tags copy verbatim, including `mv` (Clair3-RNA) and `pt`
-  (IsoQuant), which `modkit repair` cannot carry. `ts` is never copied: dorado's
-  `ts:i` would clash with minimap2's `ts:A`, which IsoQuant reads.
+  is never clipped and tags copy verbatim, including `pt` (IsoQuant) and `mv`,
+  which `modkit repair` cannot carry. `ts` is never copied: dorado's `ts:i` would
+  clash with minimap2's `ts:A`, which IsoQuant reads. (Clair3-RNA's
+  `ont_dorado_drna004` model does not use `mv`.)
 
 The CPU path (`--aligner minimap2`) carries tags through FASTQ comments
 (`samtools fastq -T | minimap2 -y`) and uses `-Y` for DNA, so no transfer is needed.
