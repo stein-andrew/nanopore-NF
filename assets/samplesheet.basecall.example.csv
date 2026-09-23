@@ -1,0 +1,4 @@
+sample_id,run_id,pod5,condition,replicate
+hg002_treated_rep1,PAY22766,/scratch/stein.an/HG002_data/ont/PAY22766,treated,1
+hg002_treated_rep2,PBA15156,/scratch/stein.an/HG002_data/ont/PBA15156,treated,2
+hg002_control,PBA15131,/scratch/stein.an/HG002_data/ont/PBA15131,control,1
