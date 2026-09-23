@@ -187,7 +187,14 @@ def main():
               f"hard-clipped (positional tags skipped): {n_clipped}", flush=True)
         print("  coordinate sorting", flush=True)
         p_out.stdin.close()
-        for name, p in (("aligned reader", p_aln), ("tag reader", p_tag), ("sorter", p_out)):
+        # The uBAM usually has reads left after the last aligned one (unmapped,
+        # filtered). Its reader blocks writing them into a pipe nobody reads, so
+        # stop it rather than wait: it would never exit. Its exit status is moot
+        # here -- a truncated uBAM already failed above as a read "not found".
+        p_tag.stdout.close()
+        p_tag.kill()
+        p_tag.wait()
+        for name, p in (("aligned reader", p_aln), ("sorter", p_out)):
             if p.wait() != 0:
                 die(f"{name} exited {p.returncode}")
         if n_tagged == 0:

@@ -39,8 +39,16 @@ process PBRUN_MINIMAP2 {
         --logfile ${prefix}.pbrun.log
 
     samtools quickcheck -v raw.bam
-    samtools view -@ ${task.cpus} -b -F ${params.filter_flags} --write-index \\
-        -o ${prefix}.bam##idx##${prefix}.bam.bai raw.bam
+
+    # pbrun copies dorado's @RG (useful provenance: run id, model, mod models) but
+    # ignores --read-group-sm and leaves records untagged. Rebuild it as our ID/SM/PL
+    # plus dorado's other fields, and stamp it on every record, matching the CPU path.
+    rg_extra=\$(samtools view -H raw.bam | grep -m1 '^@RG' | tr '\\t' '\\n' \\
+        | grep -vE '^(@RG|ID:|SM:|PL:)' | paste -sd '\\t' || true)
+    samtools addreplacerg -u -w -m overwrite_all \\
+        -r "@RG\\tID:${meta.run_id}\\tSM:${meta.id}\\tPL:ONT\${rg_extra:+\\t\$rg_extra}" raw.bam \\
+        | samtools view -@ ${task.cpus} -b -F ${params.filter_flags} --write-index \\
+            -o ${prefix}.bam##idx##${prefix}.bam.bai -
     rm -rf raw.bam pbtmp
     """
 

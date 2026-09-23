@@ -50,6 +50,9 @@ process MODKIT_REPAIR {
         --output-bam repaired.ns.bam \\
         --log-filepath ${prefix}.repair.log
     rm acceptor.ns.bam
+    # Records modkit cannot place unambiguously are dropped. In testing these were
+    # short supplementary segments in tandem repeats, never primary alignments.
+    grep -o 'repaired [0-9]* records, [0-9]* failed' ${prefix}.repair.log | tail -n1 || true
     samtools sort -@ ${task.cpus} -m 2G -T cs.tmp --write-index \\
         -o ${prefix}.bam##idx##${prefix}.bam.bai repaired.ns.bam
     rm repaired.ns.bam

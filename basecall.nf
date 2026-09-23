@@ -40,6 +40,7 @@ workflow {
 
     // ---- align + restore tags -----------------------------------------------------
     ch_tagged = channel.empty()
+    ch_logs   = channel.empty()
     if( params.aligner == 'minimap2' ) {
         ch_in = ch_ubam.combine(ch_ref)
             .map { meta, ubam, ref_name, _fasta, _fai, mmi -> tuple(meta, ubam, ref_name, mmi, bamPrefix(meta, ref_name)) }
@@ -47,14 +48,18 @@ workflow {
     }
     else {
         // Each alignment is paired with its own run's donor, by run_id.
-        ch_untagged = PBRUN_MINIMAP2(ch_ubam.combine(ch_ref)).bam
+        PBRUN_MINIMAP2(ch_ubam.combine(ch_ref))
+        ch_untagged = PBRUN_MINIMAP2.out.bam
+        ch_logs = PBRUN_MINIMAP2.out.log
         if( params.tag_method == 'modkit_repair' ) {
             ch_donor = DONOR_NAMESORT(ch_ubam).map { meta, donor -> tuple(meta.run_id, donor) }
             ch_in = ch_untagged
                 .map { meta, ref_name, bam, bai -> tuple(meta.run_id, meta, ref_name, bam, bai) }
                 .combine(ch_donor, by: 0)
                 .map { _run_id, meta, ref_name, bam, bai, donor -> tuple(meta, ref_name, bam, bai, donor, bamPrefix(meta, ref_name)) }
-            ch_tagged = MODKIT_REPAIR(ch_in).bam
+            MODKIT_REPAIR(ch_in)
+            ch_tagged = MODKIT_REPAIR.out.bam
+            ch_logs = ch_logs.mix(MODKIT_REPAIR.out.log)
         }
         else {
             ch_in = ch_untagged
@@ -106,6 +111,7 @@ workflow {
     qc          = ch_qc
     samplesheet = ch_samplesheet
     checksums   = ch_checksums
+    logs        = ch_logs
 }
 
 output {
@@ -123,6 +129,9 @@ output {
     }
     checksums {
         path '.'
+    }
+    logs {
+        path 'logs'
     }
 }
 
