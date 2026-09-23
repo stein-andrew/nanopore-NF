@@ -37,9 +37,11 @@ scripts/aicr_launch.sh /scratch/$USER/ont-pipeline/runs/run1 \
     basecall.nf -profile aicr,dna --input runs.csv --outdir /scratch/$USER/ont-pipeline/results/run1
 ```
 
-`b200-batch` can queue for days; the RTX PRO 6000 nodes are usually sooner:
-`--gpu_queue rtx-batch --gpu_type rtx_pro_6000` (or `b200-devel` / `rtx-devel` for
-runs under 4 h). AICR `/scratch` purges files older than 30 days.
+Dorado runs on `--gpu_queue` (default `b200-batch`, which can queue for days; the
+RTX PRO 6000 nodes are usually sooner: `--gpu_queue rtx-batch --gpu_type rtx_pro_6000`).
+Parabricks runs on `--pbrun_queue` (default `b200-devel`): it is CPU-bound, so each
+job gets 1 GPU and 32 CPUs, and a flowcell aligns in about 1-1.5 h (a second GPU was
+no faster in benchmarks). AICR `/scratch` purges files older than 30 days.
 
 ## Profiles
 
