@@ -3,6 +3,7 @@
 process MERGE_RUNS {
     tag "${meta.id}:${ref_name}"
     label 'cpu_sort'
+    container "${params.container_dir}/${params.stage1_image}"
 
     input:
     tuple val(meta), val(ref_name), path(bams, stageAs: 'runs/*'), path(bais, stageAs: 'runs/*')
@@ -27,6 +28,7 @@ process MERGE_RUNS {
 process BAM_QC {
     tag "${meta.id}:${ref_name}"
     label 'cpu_small'
+    container "${params.container_dir}/${params.stage1_image}"
 
     input:
     tuple val(meta), val(ref_name), path(bam), path(bai)

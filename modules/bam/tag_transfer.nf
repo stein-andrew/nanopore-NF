@@ -10,6 +10,7 @@
 process DONOR_NAMESORT {
     tag "${meta.run_id}"
     label 'cpu_sort'
+    container "${params.container_dir}/${params.stage1_image}"
 
     input:
     tuple val(meta), path(ubam)
@@ -32,6 +33,7 @@ process DONOR_NAMESORT {
 process MODKIT_REPAIR {
     tag "${meta.run_id}:${ref_name}"
     label 'cpu_sort'
+    container "${params.container_dir}/${params.stage1_image}"
 
     input:
     tuple val(meta), val(ref_name), path(bam), path(bai), path(donor), val(prefix)
@@ -72,6 +74,7 @@ process MODKIT_REPAIR {
 process COPY_TAGS {
     tag "${meta.run_id}:${ref_name}"
     label 'cpu_sort'
+    container "${params.container_dir}/${params.stage1_image}"
 
     input:
     tuple val(meta), val(ref_name), path(bam), path(bai), path(ubam), val(prefix)

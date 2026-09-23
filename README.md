@@ -27,8 +27,19 @@ scripts/transfer.sh /scratch/$USER/ont-pipeline/results/run1 \
     stein.an@<explorer-login>:/scratch/stein.an/ont-pipeline/results/run1
 ```
 
-Run Nextflow itself from a login node or a long, low-resource job; it submits every
-task to SLURM. Requires Nextflow ≥ 25.10 (workflow outputs).
+Run Nextflow itself from a login node (Explorer) or a long, low-resource job; it
+submits every task to SLURM. Requires Nextflow ≥ 25.10 (workflow outputs).
+
+**On AICR the login node kills the JVM**, so the head job runs under SLURM:
+
+```bash
+scripts/aicr_launch.sh /scratch/$USER/ont-pipeline/runs/run1 \
+    basecall.nf -profile aicr,dna --input runs.csv --outdir /scratch/$USER/ont-pipeline/results/run1
+```
+
+`b200-batch` can queue for days; the RTX PRO 6000 nodes are usually sooner:
+`--gpu_queue rtx-batch --gpu_type rtx_pro_6000` (or `b200-devel` / `rtx-devel` for
+runs under 4 h). AICR `/scratch` purges files older than 30 days.
 
 ## Profiles
 
@@ -39,7 +50,7 @@ Pick one data type and one cluster.
 | `dna` | dorado 2.1.2, `dna_r10.4.1_e8.2_400bps_hac@v6.0.0`, mods `5mCG_5hmCG@v1 6mA@v1`; `lr:hq`; GRCh38 **and** HG002; keep supplementaries (`-F 260`); `modkit repair` |
 | `rna` | dorado 1.3.0, `rna004_130bps_sup@v5.2.0`, mods `inosine_m6A_2OmeA pseU_2OmeU m5C_2OmeC 2OmeG` (@v1); moves + poly-A; `splice -uf -k14`; GRCh38; primary only (`-F 2308`); `copy_tags.py` |
 | `explorer` | SLURM queues, reference paths, images on `/scratch/stein.an` |
-| `aicr` | SLURM on `b200-batch`, Parabricks aligner, references under `/work/neu/p2026_0018_neu` |
+| `aicr` | SLURM: GPU steps on `b200-batch` (switchable), CPU steps on `cpu`; Parabricks aligner; references under `/work/neu/p2026_0018_neu` |
 | `stub` | local, no containers: `-stub-run` checks of the DAG |
 
 Override anything in a `-params-file`, e.g. all-context 5mC instead of CpG:
@@ -67,7 +78,10 @@ after Parabricks the tags are grafted back from the uBAM:
 
 * **DNA → `modkit repair`.** Supplementary alignments are kept, and Parabricks has
   no `-Y`, so they are hard-clipped; `modkit repair` rewrites MM/ML for the clipped
-  SEQ. Copying verbatim would point past the end of it.
+  SEQ. Copying verbatim would point past the end of it. It reorders MM groups
+  (content is unchanged) and drops records it cannot place unambiguously; in testing
+  those were only short supplementary segments in tandem repeats (6 of 1,176 records,
+  no primaries). The counts are printed and the log is published under `logs/`.
 * **RNA → `bin/copy_tags.py`.** Only primary alignments survive `-F 2308`, so SEQ
   is never clipped and tags copy verbatim, including `mv` (Clair3-RNA) and `pt`
   (IsoQuant), which `modkit repair` cannot carry. `ts` is never copied: dorado's
@@ -75,6 +89,11 @@ after Parabricks the tags are grafted back from the uBAM:
 
 The CPU path (`--aligner minimap2`) carries tags through FASTQ comments
 (`samtools fastq -T | minimap2 -y`) and uses `-Y` for DNA, so no transfer is needed.
+Both paths give the same primary alignments and modification content.
+
+Parabricks also ignores `--read-group-sm` and leaves records without `RG`; the
+pipeline rebuilds the `@RG` (ID = run_id, SM = sample_id, plus dorado's PU/DT/DS
+fields) and tags every record, as the CPU path does.
 
 ## Outputs (Stage 1)
 
@@ -85,6 +104,7 @@ The CPU path (`--aligner minimap2`) carries tags through FASTQ comments
   bam/<ref>/<sample>.<ref>.bam(.bai)
   qc/<ref>/<sample>.<ref>.bam.flagstat
   ubam/<run_id>.ubam.bam     (params.publish_ubam)
+  logs/                      pbrun and modkit repair logs (Parabricks path)
   pipeline_info/
 ```
 

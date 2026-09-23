@@ -4,6 +4,7 @@
 process MINIMAP2 {
     tag "${meta.run_id}:${ref_name}"
     label 'cpu_align'
+    container "${params.container_dir}/${params.stage1_image}"
 
     input:
     tuple val(meta), path(ubam), val(ref_name), path(mmi), val(prefix)

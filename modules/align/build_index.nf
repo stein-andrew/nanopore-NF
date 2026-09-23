@@ -10,6 +10,7 @@
 process REFERENCE_INDEX {
     tag "${ref_name}"
     label 'cpu_index'
+    container "${params.container_dir}/${params.stage1_image}"
 
     input:
     tuple val(ref_name), path(fasta)

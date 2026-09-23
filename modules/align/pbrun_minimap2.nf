@@ -8,6 +8,7 @@
 process PBRUN_MINIMAP2 {
     tag "${meta.run_id}:${ref_name}"
     label 'gpu_pbrun'
+    container "${params.parabricks_image}"
 
     input:
     tuple val(meta), path(ubam), val(ref_name), path(fasta), path(fai), path(mmi)

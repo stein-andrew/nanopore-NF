@@ -1,6 +1,7 @@
 process DORADO_BASECALLER {
     tag "${meta.run_id}"
     label 'gpu_dorado'
+    container "${params.container_dir}/${params.stage1_image}"
 
     input:
     tuple val(meta), path(pod5)         // a .pod5 file or a directory of them
