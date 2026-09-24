@@ -15,7 +15,7 @@ include { DORADO_BASECALLER }             from './modules/dorado/basecaller.nf'
 include { REFERENCE_INDEX }               from './modules/align/build_index.nf'
 include { MINIMAP2 }                      from './modules/align/minimap2.nf'
 include { PBRUN_MINIMAP2 }                from './modules/align/pbrun_minimap2.nf'
-include { DONOR_NAMESORT; MODKIT_REPAIR; COPY_DONOR_TAGS; COPY_TAGS } from './modules/bam/tag_transfer.nf'
+include { DONOR_NAMESORT; COPY_TAGS }    from './modules/bam/tag_transfer.nf'
 include { MERGE_RUNS; BAM_QC }            from './modules/bam/merge_qc.nf'
 
 workflow {
@@ -47,40 +47,16 @@ workflow {
         ch_tagged = MINIMAP2(ch_in, carry).bam
     }
     else {
-        // Each alignment is paired with its own run's donor, by run_id.
+        // Tags come back from the uBAM, name-sorted once per run and paired with
+        // each of that run's alignments by run_id.
         PBRUN_MINIMAP2(ch_ubam.combine(ch_ref))
-        ch_untagged = PBRUN_MINIMAP2.out.bam
         ch_logs = PBRUN_MINIMAP2.out.log
-        if( params.tag_method == 'modkit_repair' ) {
-            // modkit repair restores MM/ML/MN; the rest of `carry` (qs, mv) is then
-            // copied from the same name-sorted donor.
-            def donor_extra = carry.tokenize(',').findAll { t -> !(t in ['MM', 'ML', 'MN']) }
-            ch_donor = DONOR_NAMESORT(ch_ubam, (['MM', 'ML', 'MN'] + donor_extra).join(','))
-                .map { meta, donor -> tuple(meta.run_id, donor) }
-            ch_in = ch_untagged
-                .map { meta, ref_name, bam, bai -> tuple(meta.run_id, meta, ref_name, bam, bai) }
-                .combine(ch_donor, by: 0)
-                .map { _run_id, meta, ref_name, bam, bai, donor -> tuple(meta, ref_name, bam, bai, donor, bamPrefix(meta, ref_name)) }
-            MODKIT_REPAIR(ch_in, donor_extra ? '.repaired' : '')
-            ch_logs = ch_logs.mix(MODKIT_REPAIR.out.log)
-            if( donor_extra ) {
-                ch_repaired = MODKIT_REPAIR.out.bam
-                    .map { meta, ref_name, bam, bai -> tuple(meta.run_id, meta, ref_name, bam, bai) }
-                    .combine(ch_donor, by: 0)
-                    .map { _run_id, meta, ref_name, bam, bai, donor -> tuple(meta, ref_name, bam, bai, donor, bamPrefix(meta, ref_name)) }
-                ch_tagged = COPY_DONOR_TAGS(ch_repaired, donor_extra.join(',')).bam
-            }
-            else {
-                ch_tagged = MODKIT_REPAIR.out.bam
-            }
-        }
-        else {
-            ch_in = ch_untagged
-                .map { meta, ref_name, bam, bai -> tuple(meta.run_id, meta, ref_name, bam, bai) }
-                .combine(ch_ubam.map { meta, ubam -> tuple(meta.run_id, ubam) }, by: 0)
-                .map { _run_id, meta, ref_name, bam, bai, ubam -> tuple(meta, ref_name, bam, bai, ubam, bamPrefix(meta, ref_name)) }
-            ch_tagged = COPY_TAGS(ch_in, carry).bam
-        }
+        ch_donor = DONOR_NAMESORT(ch_ubam, carry).map { meta, donor -> tuple(meta.run_id, donor) }
+        ch_in = PBRUN_MINIMAP2.out.bam
+            .map { meta, ref_name, bam, bai -> tuple(meta.run_id, meta, ref_name, bam, bai) }
+            .combine(ch_donor, by: 0)
+            .map { _run_id, meta, ref_name, bam, bai, donor -> tuple(meta, ref_name, bam, bai, donor, bamPrefix(meta, ref_name)) }
+        ch_tagged = COPY_TAGS(ch_in, carry).bam
     }
 
     // ---- merge flowcells per sample -----------------------------------------------
@@ -198,10 +174,6 @@ def validateParams(align_to, mod_models) {
         error("basecall.nf: " + "pick a cluster with -profile explorer or -profile aicr")
     if( !(params.aligner in ['minimap2', 'parabricks']) )
         error("basecall.nf: " + "--aligner must be minimap2 or parabricks, not '${params.aligner}'")
-    if( !(params.tag_method in ['modkit_repair', 'copy_tags']) )
-        error("basecall.nf: " + "--tag_method must be modkit_repair or copy_tags, not '${params.tag_method}'")
-    if( params.aligner == 'parabricks' && params.data_type == 'DNA' && params.tag_method == 'copy_tags' )
-        log.warn "copy_tags on DNA: Parabricks hard-clips supplementaries, which will carry no MM/ML. modkit_repair keeps them."
     def cmods = mod_models.findAll { m -> m =~ /^(5mCG|5mC_|4mC)/ }
     if( cmods.size() > 1 )
         error("basecall.nf: " + "dorado allows one C modification model per run; got ${cmods.join(', ')}")

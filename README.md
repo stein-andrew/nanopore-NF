@@ -52,8 +52,8 @@ Pick one data type and one cluster.
 
 | Profile | Sets |
 |---|---|
-| `dna` | dorado 2.1.2, `dna_r10.4.1_e8.2_400bps_hac@v6.0.0`, mods `5mCG_5hmCG@v1 6mA@v1`; moves (for Clair3 `_with_mv`); `lr:hq`; GRCh38 **and** HG002; keep supplementaries (`-F 260`); `modkit repair` + `copy_tags.py` |
-| `rna` | dorado 1.3.0, `rna004_130bps_sup@v5.2.0`, mods `inosine_m6A_2OmeA pseU_2OmeU m5C_2OmeC 2OmeG` (@v1); moves + poly-A; `splice -uf -k14`; GRCh38; primary only (`-F 2308`); `copy_tags.py` |
+| `dna` | dorado 2.1.2, `dna_r10.4.1_e8.2_400bps_hac@v6.0.0`, mods `5mCG_5hmCG@v1 6mA@v1`; moves (for Clair3 `_with_mv`); `lr:hq`; GRCh38 **and** HG002; keep supplementaries (`-F 260`) |
+| `rna` | dorado 1.3.0, `rna004_130bps_sup@v5.2.0`, mods `inosine_m6A_2OmeA pseU_2OmeU m5C_2OmeC 2OmeG` (@v1); moves + poly-A; `splice -uf -k14`; GRCh38; primary only (`-F 2308`) |
 | `explorer` | SLURM queues, reference paths, images on `/scratch/stein.an` |
 | `aicr` | SLURM: GPU steps on `b200-batch` (switchable), CPU steps on `cpu`; Parabricks aligner; references under `/work/neu/p2026_0018_neu` |
 | `stub` | local, no containers: `-stub-run` checks of the DAG |
@@ -79,28 +79,30 @@ hg002_treated_rep1,PAY22766,/scratch/stein.an/HG002_data/ont/PAY22766,treated,1
 ## Why the tags are handled the way they are
 
 Parabricks `--in-bam` drops MM/ML, and `--copy-comment` segfaults on large tags, so
-after Parabricks the tags are grafted back from the uBAM:
+after Parabricks `bin/copy_tags.py` grafts the carried tags (MM/ML/MN, `qs`, `mv`,
+and `pt` for RNA) back from the uBAM, verbatim. The uBAM is name-sorted once per
+run and shared by every reference that run was aligned to.
 
-* **DNA → `modkit repair`.** Supplementary alignments are kept, and Parabricks has
-  no `-Y`, so they are hard-clipped; `modkit repair` rewrites MM/ML for the clipped
-  SEQ. Copying verbatim would point past the end of it. It reorders MM groups
-  (content is unchanged) and drops records it cannot place unambiguously; in testing
-  those were only short supplementary segments in tandem repeats (6 of 1,176 records,
-  no primaries). The counts are printed and the log is published under `logs/`.
-  `qs` and `mv` are then copied verbatim from the same name-sorted donor by
-  `copy_tags.py`, which skips `mv` on hard-clipped records. So `mv` sits on the
-  primary alignments, which is all Clair3's dwell-time models read
-  (`r1041_e82_400bps_hac_v600_with_mv --enable_dwell_time`; Clair3 skips
-  supplementaries).
-* **RNA → `bin/copy_tags.py`.** Only primary alignments survive `-F 2308`, so SEQ
-  is never clipped and tags copy verbatim, including `pt` (IsoQuant) and `mv`,
-  which `modkit repair` cannot carry. `ts` is never copied: dorado's `ts:i` would
-  clash with minimap2's `ts:A`, which IsoQuant reads. (Clair3-RNA's
-  `ont_dorado_drna004` model does not use `mv`.)
+* **Supplementaries (DNA).** Parabricks has no `-Y`, so it hard-clips them, and
+  positional tags (MM/ML/MN, `mv`) would point past the end of the clipped SEQ.
+  `--unclip` puts the clipped bases back from the uBAM (H → S, reverse-complemented
+  for reverse-strand records), which is what `minimap2 -Y` writes on the CPU path.
+  Tested on HG002: the Parabricks output matched the CPU output record for record
+  (1,176/1,176: position, CIGAR, SEQ, MM, ML, `mv`, MN), with nothing dropped.
+  This replaced `modkit repair`, which aborts intermittently while finishing its
+  output (modkit 0.5.0 and 0.6.4: `malloc(): unaligned fastbin chunk detected`;
+  about half of repeated runs on one GM18865 input) and drops records it cannot place.
+* **`mv` (DNA).** Clair3's dwell-time models
+  (`r1041_e82_400bps_hac_v600_with_mv --enable_dwell_time`) read it on primary
+  alignments; Clair3 skips supplementaries.
+* **RNA.** Only primary alignments survive `-F 2308`, so nothing is clipped. `pt` is
+  for IsoQuant. `ts` is never copied: dorado's `ts:i` would clash with minimap2's
+  `ts:A`, which IsoQuant reads. (Clair3-RNA's `ont_dorado_drna004` model does not
+  use `mv`.)
 
 The CPU path (`--aligner minimap2`) carries tags through FASTQ comments
 (`samtools fastq -T | minimap2 -y`) and uses `-Y` for DNA, so no transfer is needed.
-Both paths give the same primary alignments and modification content.
+Both paths give the same records.
 
 Parabricks also ignores `--read-group-sm` and leaves records without `RG`; the
 pipeline rebuilds the `@RG` (ID = run_id, SM = sample_id, plus dorado's PU/DT/DS
@@ -115,7 +117,7 @@ fields) and tags every record, as the CPU path does.
   bam/<ref>/<sample>.<ref>.bam(.bai)
   qc/<ref>/<sample>.<ref>.bam.flagstat
   ubam/<run_id>.ubam.bam     (params.publish_ubam)
-  logs/                      pbrun and modkit repair logs (Parabricks path)
+  logs/                      pbrun logs (Parabricks path)
   pipeline_info/
 ```
 

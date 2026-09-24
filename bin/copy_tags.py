@@ -10,9 +10,9 @@ pbrun minimap2 drops MM/ML when reading a uBAM (--in-bam), and segfaults on the
 comment lines). Since the GPU alignment is byte-identical to the CPU one, the
 cheapest correct fix is to align without tags and graft them back afterwards.
 
-Unlike `modkit repair`, this can carry any tag: the move table (mv) for Clair3's
-dwell-time models (DNA, `--enable_dwell_time`), the poly-A estimate (pt) for
-IsoQuant (RNA), and qs.
+It carries any tag: base modifications (MM/ML/MN), the move table (mv) for
+Clair3's dwell-time models (DNA, `--enable_dwell_time`), the poly-A estimate (pt)
+for IsoQuant (RNA), and qs.
 
 Tags are copied verbatim from the source BAM -- no FASTQ text round-trip, so
 nothing can be silently truncated or reformatted on the way through.
@@ -24,11 +24,15 @@ lockstep. Constant memory: nothing is held in RAM but the current record.
 Aligned read names must be a subset of the uBAM's, which is true whenever the
 aligned file came from that uBAM.
 
-Hard-clipped records (supplementary alignments without minimap2 -Y) carry a
-truncated SEQ, so MM/ML/MN/mv copied verbatim would point past the end of it.
-Those tags are skipped on such records and counted; everything else is copied.
-Use `modkit repair` for MM/ML when supplementary alignments matter (the DNA arm);
-the DNA arm then runs this for qs and mv, which Clair3 reads on primaries only.
+Hard-clipped records (supplementary alignments without minimap2 -Y; Parabricks
+has no -Y) carry a truncated SEQ, so MM/ML/MN/mv copied verbatim would point past
+the end of it. By default those tags are skipped on such records and counted.
+With --unclip (the DNA arm) the clipped bases are put back instead: SEQ and QUAL
+come from the uBAM (reverse-complemented for reverse-strand records) and each H
+becomes an S, which is exactly what minimap2 -Y writes. Every tag is then valid
+verbatim on every record, and the output matches the CPU path's. This replaces
+`modkit repair`, which aborts intermittently while finishing its output
+(0.5.0 and 0.6.4, "malloc(): unaligned fastbin chunk detected").
 
 Usage
 -----
@@ -57,8 +61,45 @@ DEFAULT_TAGS = "MM,ML,MN,pt,qs"
 POSITIONAL = {"MM", "ML", "MN", "mv"}
 
 
+COMPLEMENT = str.maketrans("ACGTNacgtn", "TGCANtgcan")
+CIGAR_OPS = "MIDNSHP=X"
+
+
 def die(msg):
     sys.exit(f"FATAL: {msg}")
+
+
+def unclip(fields, useq, uqual):
+    """Turn hard clips back into soft clips using the uBAM's full read.
+
+    `fields` is a SAM record split on tabs, edited in place. The uBAM holds the
+    read as basecalled; a reverse-strand record stores its reverse complement.
+    Returns False (record untouched) if the pieces don't line up.
+    """
+    cigar = fields[5]
+    ops, num = [], ""
+    for ch in cigar:
+        if ch.isdigit():
+            num += ch
+        elif ch in CIGAR_OPS and num:
+            ops.append((int(num), ch))
+            num = ""
+        else:
+            return False
+    left = ops[0][0] if ops and ops[0][1] == "H" else 0
+    right = ops[-1][0] if len(ops) > 1 and ops[-1][1] == "H" else 0
+    if any(op == "H" for _, op in ops[1 if left else 0:len(ops) - (1 if right else 0)]):
+        return False                     # H only allowed at the ends
+    if int(fields[1]) & 16:
+        useq = useq.translate(COMPLEMENT)[::-1]
+        uqual = uqual[::-1]
+    seq = fields[9]
+    if seq == "*" or len(useq) != left + len(seq) + right or useq[left:left + len(seq)] != seq:
+        return False
+    fields[5] = cigar.replace("H", "S")
+    fields[9] = useq
+    fields[10] = uqual if uqual != "*" and len(uqual) == len(useq) else "*"
+    return True
 
 
 def sh(cmd):
@@ -108,9 +149,12 @@ def main():
     ap.add_argument("--out", required=True, help="output BAM (coordinate sorted, indexed)")
     ap.add_argument("--tags", default=DEFAULT_TAGS,
                     help=f"comma-separated tags to copy (default: {DEFAULT_TAGS})")
+    ap.add_argument("--unclip", action="store_true",
+                    help="restore hard-clipped bases from the uBAM (H -> S) so "
+                         "positional tags stay valid on supplementaries")
     ap.add_argument("--ubam-name-sorted", action="store_true",
-                    help="--ubam is already name-sorted by this samtools (e.g. the "
-                         "modkit repair donor): skip sorting it again")
+                    help="--ubam is already name-sorted by this samtools (the "
+                         "pipeline's DONOR_NAMESORT): skip sorting it again")
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--samtools", default="samtools")
     ap.add_argument("--tmpdir", default=os.environ.get("TMPDIR", "/tmp"))
@@ -152,11 +196,12 @@ def main():
 
         cur_name = None
         cur_tags = []
-        n_records = n_tagged = n_missing = n_clipped = 0
+        cur_seq = cur_qual = "*"
+        n_records = n_tagged = n_missing = n_clipped = n_unclipped = 0
 
         def advance_to(name):
             """Pull uBAM records until we reach `name`. Returns its tags, or None."""
-            nonlocal cur_name, cur_tags
+            nonlocal cur_name, cur_tags, cur_seq, cur_qual
             while cur_name != name:
                 line = p_tag.stdout.readline()
                 if not line:
@@ -164,6 +209,7 @@ def main():
                 f = line.rstrip("\n").split("\t")
                 cur_name = f[0]
                 cur_tags = [t for t in f[11:] if t.startswith(wanted)]
+                cur_seq, cur_qual = f[9], f[10]
             return cur_tags
 
         for line in p_aln.stdout:
@@ -177,10 +223,13 @@ def main():
                 die(f"read '{fields[0]}' not found in uBAM -- are these the same sample? "
                     "(name sort order must come from the same samtools version)")
             if "H" in fields[5]:
-                kept = [t for t in tags if t[:2] not in POSITIONAL]
-                if len(kept) != len(tags):
-                    n_clipped += 1
-                tags = kept
+                if args.unclip and unclip(fields, cur_seq, cur_qual):
+                    n_unclipped += 1
+                else:
+                    kept = [t for t in tags if t[:2] not in POSITIONAL]
+                    if len(kept) != len(tags):
+                        n_clipped += 1
+                    tags = kept
             # Don't duplicate a tag the aligner already emitted.
             have = {t[:2] for t in fields[11:]}
             add = [t for t in tags if t[:2] not in have]
@@ -192,7 +241,11 @@ def main():
             p_out.stdin.write("\t".join(fields) + "\n")
 
         print(f"  records: {n_records}  tagged: {n_tagged}  without tags: {n_missing}  "
+              f"unclipped: {n_unclipped}  "
               f"hard-clipped (positional tags skipped): {n_clipped}", flush=True)
+        if args.unclip and n_clipped:
+            die(f"{n_clipped} hard-clipped record(s) could not be unclipped from the uBAM "
+                "(SEQ does not match the read); refusing to drop their tags silently")
         print("  coordinate sorting", flush=True)
         p_out.stdin.close()
         # The uBAM usually has reads left after the last aligned one (unmapped,

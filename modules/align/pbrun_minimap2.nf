@@ -2,8 +2,7 @@
 // not the site module: pbrun from the module is itself an apptainer wrapper and
 // cannot run inside a container.
 //
-// --in-bam drops MM/ML, so the output is untagged; MODKIT_REPAIR or COPY_TAGS grafts
-// the tags back. The filter runs here because the NGC image ships samtools.
+// --in-bam drops MM/ML, so the output is untagged; COPY_TAGS grafts the tags back. The filter runs here because the NGC image ships samtools.
 
 process PBRUN_MINIMAP2 {
     tag "${meta.run_id}:${ref_name}"
