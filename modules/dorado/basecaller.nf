@@ -5,7 +5,7 @@ process DORADO_BASECALLER {
 
     input:
     tuple val(meta), path(pod5)         // a .pod5 file or a directory of them
-    val mod_models                      // e.g. ['5mCG_5hmCG@v1', '6mA@v1']
+    val mod_models
 
     output:
     tuple val(meta), path("${meta.run_id}.ubam.bam"), env('DORADO_VERSION'), emit: ubam
@@ -36,6 +36,7 @@ process DORADO_BASECALLER {
     samtools quickcheck -u -v ${meta.run_id}.ubam.bam
     """
 
+    // Stub test for pipeline integration
     stub:
     """
     DORADO_VERSION=stub

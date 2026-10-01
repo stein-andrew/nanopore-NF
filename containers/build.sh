@@ -6,10 +6,7 @@
 #
 # Submit from the repo root: sbatch runs a spooled copy of this script, so under
 # SLURM the .def files are found via $SLURM_SUBMIT_DIR/containers.
-#
-# APPTAINER_TMPDIR must be on /scratch: the dorado tarballs alone are ~3.4 GB and
-# the default /tmp on login and compute nodes is too small. Existing images are not
-# overwritten; delete one by hand to rebuild it.
+
 set -euo pipefail
 
 HERE=${SLURM_SUBMIT_DIR:+$SLURM_SUBMIT_DIR/containers}

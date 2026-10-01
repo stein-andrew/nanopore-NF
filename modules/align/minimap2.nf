@@ -24,6 +24,7 @@ process MINIMAP2 {
             -o ${prefix}.bam##idx##${prefix}.bam.bai -
     """
 
+    // Stub test for pipeline integration
     stub:
     """
     touch ${prefix}.bam ${prefix}.bam.bai

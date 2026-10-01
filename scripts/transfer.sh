@@ -7,9 +7,6 @@
 # The uBAMs are left behind unless --with-ubam is given: Stage 2 only reads the
 # aligned BAMs, which already carry MM/ML (and mv/pt for RNA).
 #
-# Safe to re-run: --partial resumes interrupted files and finished ones are skipped.
-# rsync skips on size + mtime, so after a checksum failure resend with
-#   RSYNC_OPTS=--checksum scripts/transfer.sh ...
 # Verification is `md5sum -c checksums.md5` at the destination, over the same
 # relative paths analysis_samplesheet.csv uses.
 set -euo pipefail

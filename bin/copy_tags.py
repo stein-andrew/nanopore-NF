@@ -51,11 +51,8 @@ import subprocess
 import sys
 import tempfile
 
+# Default tags for repairing
 DEFAULT_TAGS = "MM,ML,MN,pt,qs"
-# RG is deliberately absent: the aligner already wrote a read group into the
-# aligned BAM, and a second RG tag on the record would conflict with the header.
-# ts is absent too: dorado's ts:i (trimmed samples) collides with minimap2's
-# ts:A (transcript strand), which IsoQuant reads.
 
 # Tags whose values index into SEQ. Wrong on a hard-clipped record.
 POSITIONAL = {"MM", "ML", "MN", "mv"}

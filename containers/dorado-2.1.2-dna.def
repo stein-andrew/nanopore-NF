@@ -2,7 +2,8 @@ Bootstrap: docker
 From: ubuntu:24.04
 
 # Stage 1 image for DNA: basecall -> (CPU align) -> tag repair.
-# Portable between Explorer and AICR; GPU access at run time needs `apptainer --nv`.
+# Portable between Explorer and AICR (or any future clusters with an updated conf.);
+# GPU access at run time needs `apptainer --nv`.
 #
 # All four HAC v6.0.0 mod models are baked in, but dorado accepts only ONE model per
 # canonical base ("only one modbase model motif per canonical base is allowed"), so a

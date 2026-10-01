@@ -1,7 +1,7 @@
 #!/usr/bin/env nextflow
 // Stage 1: pod5 -> dorado uBAM -> alignment (Parabricks or CPU minimap2) -> mod tags
-// restored -> one BAM per sample per reference, plus the samplesheet Stage 2 reads.
 //
+// Example Usage:
 //   nextflow run basecall.nf -profile aicr,dna     --input runs.csv --outdir results/run1
 //   nextflow run basecall.nf -profile explorer,rna --input runs.csv --outdir results/run1
 //
@@ -30,15 +30,15 @@ workflow {
     // mv only exists when dorado emitted moves; asking for it otherwise fails the check.
     def carry = params.carry_tags.tokenize(',').findAll { t -> t != 'mv' || params.emit_moves }.join(',')
 
-    // ---- references: FASTA + cached .fai and .mmi --------------------------------
+    // references: FASTA + cached .fai and .mmi
     ch_fasta = channel.fromList(align_to.collect { name -> tuple(name, file(params.genomes[name], checkIfExists: true)) })
     ch_ref = ch_fasta.join(REFERENCE_INDEX(ch_fasta, params.mm2_index_args))   // (ref_name, fasta, fai, mmi)
 
-    // ---- basecall -----------------------------------------------------------------
+    // basecall
     DORADO_BASECALLER(channel.fromList(rows), mod_models)
     ch_ubam = DORADO_BASECALLER.out.ubam.map { meta, ubam, version -> tuple(meta + [dorado_version: version], ubam) }
 
-    // ---- align + restore tags -----------------------------------------------------
+    // align + restore tags
     ch_tagged = channel.empty()
     ch_logs   = channel.empty()
     if( params.aligner == 'minimap2' ) {
@@ -59,7 +59,7 @@ workflow {
         ch_tagged = COPY_TAGS(ch_in, carry).bam
     }
 
-    // ---- merge flowcells per sample -----------------------------------------------
+    // merge flowcells per sample
     ch_split = ch_tagged.branch { meta, _ref_name, _bam, _bai ->
         single: meta.n_runs == 1
         multi:  true
@@ -76,7 +76,7 @@ workflow {
 
     ch_qc = BAM_QC(ch_final)
 
-    // ---- hand-off to Stage 2 --------------------------------------------------------
+    // hand-off to Stage 2
     // Paths are relative to outdir, so the sheet still resolves after rsync.
     def extra = rows.collectMany { r -> r[0].extra.keySet() as List }.unique()
     def header = (['sample_id', 'reference', 'data_type', 'bam', 'bai', 'basecall_model',

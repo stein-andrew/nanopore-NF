@@ -18,6 +18,7 @@ process MERGE_RUNS {
     samtools merge -@ ${task.cpus} --write-index -o ${prefix}.bam##idx##${prefix}.bam.bai ${bams}
     """
 
+    // Stub test for pipeline integration
     stub:
     prefix = "${meta.id}.${ref_name}"
     """
@@ -42,6 +43,7 @@ process BAM_QC {
     md5sum ${bam} > ${bam}.md5
     """
 
+    // Stub test for pipeline integration
     stub:
     """
     touch ${bam}.flagstat

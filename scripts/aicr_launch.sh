@@ -2,6 +2,7 @@
 # Run a pipeline on AICR. The login node kills the JVM within a second, so the
 # Nextflow head job itself is submitted to the cpu partition.
 #
+# Example Usage:
 #   scripts/aicr_launch.sh <launch_dir> basecall.nf -profile aicr,dna --input runs.csv --outdir results/run1
 #
 # <launch_dir> holds .nextflow/ and the head log; re-run the same command with

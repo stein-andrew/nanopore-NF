@@ -1,11 +1,7 @@
 // Reference indexes (.fai and a minimap2 .mmi per preset), built once into
 // params.index_dir and reused by every later run; the shared reference directory
-// is never written to.
+// is never written to for overwrite protection.
 //
-// Deliberately not storeDir: the head node looks the files up before the job runs,
-// NFS caches that negative answer, and the post-job check then reports "Missing
-// output file" for a file another node just wrote. Here the existence check runs
-// on the compute node and the outputs are symlinks created in the task dir.
 
 process REFERENCE_INDEX {
     tag "${ref_name}"
@@ -39,6 +35,7 @@ process REFERENCE_INDEX {
     ln -s ${mmi} ${ref_name}.${index_tag}.mmi
     """
 
+    // Stub test for pipeline integration
     stub:
     index_tag = index_args.replaceAll(/-x\s+/, '').replaceAll(/[-:\s]+/, '_').replaceAll(/^_|_$/, '')
     """

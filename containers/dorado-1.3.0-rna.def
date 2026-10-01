@@ -2,13 +2,15 @@ Bootstrap: docker
 From: ubuntu:24.04
 
 # Stage 1 image for RNA: basecall -> (CPU align) -> tag transfer.
-# Portable between Explorer and AICR; GPU access at run time needs `apptainer --nv`.
+# Portable between Explorer and AICR (or any future clusters with an updated conf.); 
+# GPU access at run time needs `apptainer --nv`.
 #
 # v5.2.0 SUP models, because the gIVT error table for v5.2.0 (dorado_1.0) is the one
-# that matches them. The default run uses the four models that give the usual 8 mods;
-# m6A_DRACH is baked in too but overlaps inosine_m6A_2OmeA on A, so they cannot run together.
+# that matches them. The default run uses the four models that give the usual 8 mods.
 #
-# modkit is pinned to 0.5.0 for RNA end to end (repair here, sample-probs/pileup in Stage 2).
+# modkit is pinned to 0.5.0 for RNA end to end (used for the ability to keep --max-depth at int32 limit).
+# If using synthetics or known transcriptome where lower coverage can be permitted, update to modkit>=0.6.4
+# for significant speedup.
 
 %labels
     Stage       1 (basecall + align)
