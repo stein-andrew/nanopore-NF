@@ -6,6 +6,11 @@
 // it is GB-scale for GENCODE, and SQLite is unreliable on network filesystems.
 // IsoQuant writes into iq/<sample>/; its files are moved up to the task directory so
 // they publish as isoquant/<sample>/<file>, not isoquant/<sample>/iq/<sample>/<file>.
+//
+// HOME is the task directory: IsoQuant 3.10 always creates ~/.config/IsoQuant (a cache of
+// past GTF conversions) and the real home is read-only inside the container. A per-task
+// home also keeps concurrent tasks off one cache file and keeps that cache, which would
+// point at our deleted tmp database, out of later runs.
 
 process ISOQUANT_DISCOVER {
     tag "${meta.id}:${meta.ref}"
@@ -27,6 +32,8 @@ process ISOQUANT_DISCOVER {
     script:
     def id = meta.id
     """
+    export HOME=\$PWD/home
+    mkdir -p "\$HOME"
     genedb=\$(mktemp -d "\${TMPDIR:-/tmp}/iq_genedb.XXXXXX")
     isoquant \\
         --data_type nanopore \\
