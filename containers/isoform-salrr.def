@@ -1,0 +1,66 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+# Stage 2 image for RNA isoform curation (SALRR): MAPQ filter, IsoQuant, StringTie,
+# isomatch, and bin/filter_models.py (needs only python3, which IsoQuant brings).
+#
+#   containers/build.sh isoform-salrr        -> $CONTAINER_DIR/isoform-salrr.sif
+#
+# Versions are SALRR's wherever they can be had: IsoQuant 3.10.0, StringTie 2.2.1 and
+# samtools 1.18, from bioconda. Isomatch is the exception: SALRR used v0.4.0, but its
+# command line and output names changed after 0.6.1 and only the current one is
+# documented, so the modules are written against that. It is built from source; the
+# commit it got is written to /opt/isomatch.commit and printed by %test. Put that commit
+# into ISOMATCH_REF so a rebuild gives the same binary.
+
+%labels
+    Stage       2 (RNA isoform curation)
+    DataType    RNA
+    IsoQuant    3.10.0
+    StringTie   2.2.1
+    Samtools    1.18
+
+%post -c /bin/bash
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends curl ca-certificates bzip2 procps git build-essential
+    rm -rf /var/lib/apt/lists/*
+
+    curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C /usr/local bin/micromamba
+    /usr/local/bin/micromamba create -y -p /opt/conda -c conda-forge -c bioconda \
+        isoquant=3.10.0 stringtie=2.2.1 samtools=1.18
+    /usr/local/bin/micromamba clean -afy
+
+    ISOMATCH_REF=main
+    export RUSTUP_HOME=/tmp/rustup CARGO_HOME=/tmp/cargo
+    curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+    source /tmp/cargo/env
+    git clone https://github.com/zhengxinchang/isomatch /tmp/isomatch
+    cd /tmp/isomatch
+    git checkout "${ISOMATCH_REF}"
+    git rev-parse HEAD > /opt/isomatch.commit
+    rustup toolchain install || true      # honours the repo's rust-toolchain.toml on newer rustup
+    cargo build --release --locked
+    install -m 0755 target/release/isomatch /usr/local/bin/isomatch
+    cd /
+    rm -rf /tmp/isomatch /tmp/rustup /tmp/cargo
+
+%environment
+    export PATH=/opt/conda/bin:/usr/local/bin:$PATH
+
+%runscript
+    exec "$@"
+
+%test
+    isoquant --version
+    stringtie --version
+    samtools --version | head -1
+    python3 --version
+    isomatch --version 2>/dev/null || isomatch --help | head -3
+    echo "isomatch commit: $(cat /opt/isomatch.commit)"
+
+%help
+    Build (see containers/build.sh):
+        apptainer build --fakeroot isoform-salrr.sif isoform-salrr.def
+    Used by RNA_analysis.nf as params.isoform_image.

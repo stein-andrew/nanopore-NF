@@ -1,0 +1,25 @@
+# Stage 2 (RNA_analysis.nf) settings for one cohort. Copy it per run:
+#
+#   cp params/rna_analysis.example.yaml params/run1_rna.yaml    # then edit input and outdir
+#
+#   # DAG check; --outdir on the command line keeps stub files out of the real outdir
+#   nextflow run RNA_analysis.nf -profile explorer,rna,stub -stub-run -params-file params/run1_rna.yaml \
+#       --outdir /scratch/stein.an/ont-pipeline/stub-out-rna
+#
+#   nextflow run RNA_analysis.nf -profile explorer,rna -params-file params/run1_rna.yaml
+#
+# Commented lines are the conf/rna.config defaults, which are SALRR's settings; uncomment
+# to override. A --flag on the command line beats this file; this file beats the profiles.
+# The annotation GTF is per cluster (conf/explorer.config: annotations), like the FASTA.
+
+# ---- input / output ---------------------------------------------------------
+input: /scratch/stein.an/ont-pipeline/results/CHANGE_ME/analysis_samplesheet.csv   # Stage 1's handoff file
+outdir: /scratch/stein.an/ont-pipeline/results/CHANGE_ME_rna    # must be on /scratch: outputs are hard links
+
+# ---- isoform curation (SALRR) -----------------------------------------------
+# isoform_min_mapq: 40                          # primary alignments with MAPQ >= this
+# isoquant_args: ''                             # beyond -d nanopore --genedb --complete_genedb
+# stringtie_args: '-L -c 2.5 -f 0.05 -t --fr'   # SALRR's flags + --fr for direct RNA
+# isoform_min_cpm: 1                            # per-sample: IsoQuant CPM > this, StringTie TPM > this
+# isomatch_merge_args: ''
+# isomatch_classify_args: ''
