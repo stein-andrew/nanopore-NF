@@ -1,0 +1,45 @@
+# Stage 1 (basecall.nf) settings for one direct RNA run. Copy it per run:
+#
+#   cp params/rna.example.yaml params/run1.yaml      # then edit input and outdir
+#
+#   # DAG check; --outdir on the command line keeps stub files out of the real outdir
+#   nextflow run basecall.nf -profile explorer,rna,stub -stub-run -params-file params/run1.yaml \
+#       --outdir /scratch/stein.an/ont-pipeline/stub-out
+#
+#   nextflow run basecall.nf -profile explorer,rna -params-file params/run1.yaml
+#
+# Uncommented lines are the things you change per run; the values shown are the current
+# conf/rna.config defaults, so this file as-is behaves exactly like `-profile rna`.
+# Commented lines show what else exists; uncomment to override.
+# A --flag on the command line beats this file; this file beats the profiles.
+# Not here on purpose:
+#   data_type  comes from -profile rna
+#   genomes    paths live in the cluster profile; align_to picks from them by name
+
+# ---- input / output ---------------------------------------------------------
+input: assets/samplesheet.basecall.example.csv     # sample_id,run_id,pod5[,extra columns]
+outdir: /scratch/stein.an/ont-pipeline/results/CHANGE_ME   # must be on /scratch: outputs are hard links to work/
+
+# ---- basecalling (dorado) ---------------------------------------------------
+dorado_model: 'rna004_130bps_sup@v5.2.0'
+mod_models:
+  - 'inosine_m6A_2OmeA@v1'
+  - 'pseU_2OmeU@v1'
+  - 'm5C_2OmeC@v1'
+  - '2OmeG@v1'
+estimate_poly_a: true                    # pt:i tag, needed for poly(A) outputs later
+emit_moves: true                         # mv tag
+# dorado_device: 'cuda:all'
+# dorado_args: ''
+
+# ---- alignment --------------------------------------------------------------
+aligner: minimap2                        # minimap2 | parabricks
+align_to:
+  - GRCh38                               # names from the cluster profile's genomes
+# mm2_args: '-uf -k14'                   # CPU minimap2 only
+# pbrun_args: '--forward-transcript-strand -k 14'
+# filter_flags: 2308                     # samtools view -F: unmapped + secondary + supplementary
+# carry_tags: 'MM,ML,MN,pt,qs,mv'        # restored after Parabricks
+
+# ---- outputs ----------------------------------------------------------------
+publish_ubam: true
