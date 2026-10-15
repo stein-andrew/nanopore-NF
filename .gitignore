@@ -1,0 +1,32 @@
+# Nextflow
+work/
+.nextflow/
+.nextflow.log*
+results/
+.stub_indexes/
+
+# Images are built into /scratch (containers/build.sh), never committed
+*.sif
+*.sif.partial
+
+# Data
+*.pod5
+*.bam
+*.bai
+*.cram
+*.crai
+*.fa
+*.fasta
+*.fai
+*.mmi
+*.bed
+*.bedgraph
+*.vcf.gz
+*.tbi
+
+# Python / editors
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.vscode/
+.DS_Store
