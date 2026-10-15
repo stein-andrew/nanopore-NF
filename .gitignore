@@ -31,3 +31,4 @@ __pycache__/
 .vscode/
 .DS_Store
 stub-out/
+slurm-*.out

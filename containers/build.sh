@@ -29,7 +29,9 @@ for name in "$@"; do
     echo "building $sif"
     # Serialize builds that share a cache: two concurrent pulls of the same base
     # image corrupt it ("conveyor failed to get ... unexpected end of JSON input").
-    flock "$APPTAINER_CACHEDIR/.build.lock" apptainer build --fakeroot "$sif.partial" "$def"
+    # --force: a .partial only survives a build that died (cancelled, failed %test, OOM),
+    # since a good one is renamed just below, so it is always safe to overwrite.
+    flock "$APPTAINER_CACHEDIR/.build.lock" apptainer build --force --fakeroot "$sif.partial" "$def"
     mv "$sif.partial" "$sif"
     apptainer test "$sif"
 done

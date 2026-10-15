@@ -5,13 +5,16 @@ From: ubuntu:24.04
 # isomatch, and bin/filter_models.py (needs only python3, which IsoQuant brings).
 #
 #   containers/build.sh isoform-salrr        -> $CONTAINER_DIR/isoform-salrr.sif
+#   (build.sh skips an existing .sif: delete it first to rebuild)
 #
 # Versions are SALRR's wherever they can be had: IsoQuant 3.10.0, StringTie 2.2.1 and
 # samtools 1.18, from bioconda. Isomatch is the exception: SALRR used v0.4.0, but its
 # command line and output names changed after 0.6.1 and only the current one is
-# documented, so the modules are written against that. It is built from source; the
-# commit it got is written to /opt/isomatch.commit and printed by %test. Put that commit
-# into ISOMATCH_REF so a rebuild gives the same binary.
+# documented, so the modules are written against 0.7.0, pinned to the commit below.
+#
+# The build fails, rather than producing an image that only looks fine, when: conda
+# resolves an IsoQuant other than 3.10.0, IsoQuant has no runnable entry point, or any
+# %test line fails.
 
 %labels
     Stage       2 (RNA isoform curation)
@@ -19,6 +22,7 @@ From: ubuntu:24.04
     IsoQuant    3.10.0
     StringTie   2.2.1
     Samtools    1.18
+    Isomatch    0.7.0 (8cd9dc2f9634ebe6c3852ccfacf15dfd34eb22d4)
 
 %post -c /bin/bash
     set -euo pipefail
@@ -30,9 +34,32 @@ From: ubuntu:24.04
     curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C /usr/local bin/micromamba
     /usr/local/bin/micromamba create -y -p /opt/conda -c conda-forge -c bioconda \
         isoquant=3.10.0 stringtie=2.2.1 samtools=1.18
+
+    # The version conda actually installed, checked and recorded for %test.
+    iq_version=$(/usr/local/bin/micromamba list -p /opt/conda | awk '$1 == "isoquant" { print $2 }')
+    if [[ $iq_version != 3.10.0 ]]; then
+        echo "expected IsoQuant 3.10.0, conda installed '${iq_version:-nothing}'" >&2
+        exit 1
+    fi
+    echo "$iq_version" > /opt/isoquant.version
     /usr/local/bin/micromamba clean -afy
 
-    ISOMATCH_REF=main
+    # The modules call `isoquant`. Newer bioconda builds install that name; older ones
+    # only install isoquant.py (in bin/ or share/). Give it the name, via the env's own
+    # python3 so it runs even if the script is not executable; no entry point at all: stop.
+    if [[ ! -x /opt/conda/bin/isoquant ]]; then
+        iq=$(ls /opt/conda/bin/isoquant.py /opt/conda/share/isoquant*/isoquant.py 2>/dev/null | head -n1 || true)
+        if [[ -z $iq ]]; then
+            echo "IsoQuant installed neither isoquant nor isoquant.py; /opt/conda/bin has:" >&2
+            ls /opt/conda/bin >&2
+            exit 1
+        fi
+        printf '#!/bin/sh\nexec %s %s "$@"\n' /opt/conda/bin/python3 "$iq" > /opt/conda/bin/isoquant
+        chmod 0755 /opt/conda/bin/isoquant
+    fi
+
+    # isomatch 0.7.0, built from source at a fixed commit.
+    ISOMATCH_REF=8cd9dc2f9634ebe6c3852ccfacf15dfd34eb22d4
     export RUSTUP_HOME=/tmp/rustup CARGO_HOME=/tmp/cargo
     curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
     source /tmp/cargo/env
@@ -53,11 +80,14 @@ From: ubuntu:24.04
     exec "$@"
 
 %test
-    isoquant --version
+    # /bin/sh, so no pipefail; set -e stops the build at the first failing line.
+    set -e
+    isoquant --help > /dev/null
+    echo "isoquant $(cat /opt/isoquant.version) (runs: $(command -v isoquant))"
     stringtie --version
     samtools --version | head -1
     python3 --version
-    isomatch --version 2>/dev/null || isomatch --help | head -3
+    isomatch --version
     echo "isomatch commit: $(cat /opt/isomatch.commit)"
 
 %help
