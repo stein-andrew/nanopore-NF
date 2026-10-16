@@ -2,7 +2,9 @@
 // Stage 2 (RNA): Stage 1 BAMs -> SALRR isoform curation.
 //
 //   per sample   MAPQ >= 40 -> IsoQuant + StringTie -> CPM/TPM > 1 -> isomatch merge -> classify
-//   (step 3b, next: cohort isomatch merge -> IsoQuant requant -> median CPM > 1)
+//   cohort       isomatch merge of all samples -> classify -> catalogue
+//   per sample   IsoQuant requantification against the catalogue
+//   cohort       median CPM across samples > 1 -> high-confidence transcripts
 //
 // Example Usage:
 //   nextflow run RNA_analysis.nf -profile explorer,rna -params-file params/run1_rna.yaml
@@ -17,9 +19,10 @@
 
 include { FAIDX }             from './modules/ref/faidx.nf'
 include { FILTER_MAPQ }       from './modules/bam/filter_mapq.nf'
-include { ISOQUANT_DISCOVER } from './modules/isoform/isoquant.nf'
-include { STRINGTIE }         from './modules/isoform/stringtie.nf'
-include { ISOFORM_CONSENSUS } from './modules/isoform/consensus.nf'
+include { ISOQUANT_DISCOVER; ISOQUANT_REQUANT } from './modules/isoform/isoquant.nf'
+include { STRINGTIE }                           from './modules/isoform/stringtie.nf'
+include { ISOFORM_CONSENSUS }                   from './modules/isoform/consensus.nf'
+include { COHORT_CATALOGUE; COHORT_FILTER }     from './modules/isoform/cohort.nf'
 
 workflow {
     main:
@@ -27,9 +30,11 @@ workflow {
         error("RNA_analysis.nf: " + "input (Stage 1's analysis_samplesheet.csv) is required")
     def rows = parseSamplesheet(file(params.input, checkIfExists: true))
     def refs = rows.collect { row -> row[0].ref }.unique()
+    def nPerRef = rows.countBy { row -> row[0].ref }
     validateParams(refs)
     log.info "RNA_analysis.nf: ${rows.size()} BAM(s), references=${refs.join(',')}, " +
-             "MAPQ >= ${params.isoform_min_mapq}, per-sample model filter > ${params.isoform_min_cpm}"
+             "MAPQ >= ${params.isoform_min_mapq}, per-sample model filter > ${params.isoform_min_cpm}, " +
+             "cohort median CPM > ${params.cohort_min_median_cpm}"
 
     // references: (ref, fasta, fai) and (ref, gtf)
     ch_ref = FAIDX(channel.fromList(refs.collect { ref -> tuple(ref, file(params.genomes[ref], checkIfExists: true)) }))
@@ -53,11 +58,45 @@ workflow {
             .map { _ref, meta, iq_gtf, iq_counts, st_gtf, fasta, fai, gtf -> tuple(meta, iq_gtf, iq_counts, st_gtf, fasta, fai, gtf) }
     )
 
+    // ---- cohort: one catalogue per reference from every sample's consensus
+    // groupKey with the sample count lets each reference's group close as soon as its
+    // last sample arrives, instead of waiting for every reference.
+    COHORT_CATALOGUE(
+        ISOFORM_CONSENSUS.out.merged
+            .map { meta, gtf -> tuple(groupKey(meta.ref, nPerRef[meta.ref]), gtf) }
+            .groupTuple()
+            // sorted by file name (= sample ID): isomatch numbers its inputs S1..Sn in
+            // command-line order, which must not depend on which sample finished first
+            .map { key, gtfs -> tuple(key.toString(), gtfs.sort { f -> f.name }) }
+            .combine(ch_ref, by: 0)
+            .combine(ch_gtf, by: 0)                                 // (ref, gtfs, fasta, fai, gtf)
+    )
+
+    // ---- every sample's MAPQ-filtered reads, requantified against its reference's catalogue
+    ISOQUANT_REQUANT(
+        ch_keyed
+            .combine(COHORT_CATALOGUE.out.catalogue, by: 0)         // (ref, meta, bam, bai, fasta, fai, gtf, catalogue)
+            .map { _ref, meta, bam, bai, fasta, fai, _gtf, catalogue -> tuple(meta, bam, bai, fasta, fai, catalogue) }
+    )
+
+    // ---- median CPM across samples -> high-confidence transcripts
+    COHORT_FILTER(
+        ISOQUANT_REQUANT.out.counts
+            .map { meta, counts -> tuple(groupKey(meta.ref, nPerRef[meta.ref]), meta.id, counts) }
+            .groupTuple()
+            .map { key, ids, counts -> tuple(key.toString(), ids, counts) }
+            .combine(COHORT_CATALOGUE.out.catalogue, by: 0)
+            .combine(COHORT_CATALOGUE.out.classification, by: 0)    // (ref, ids, counts, catalogue, classification)
+    )
+
     publish:
     mapq_qc   = FILTER_MAPQ.out.flagstat
     isoquant  = ISOQUANT_DISCOVER.out.out
     stringtie = STRINGTIE.out
     consensus = ISOFORM_CONSENSUS.out.out
+    cohort    = COHORT_CATALOGUE.out.out
+    requant   = ISOQUANT_REQUANT.out.out
+    high_conf = COHORT_FILTER.out
 }
 
 output {
@@ -72,6 +111,15 @@ output {
     }
     consensus {
         path { meta, _filtered, _merged, _classify -> "isoforms/${meta.ref}/consensus/${meta.id}" }
+    }
+    cohort {
+        path { ref_name, _merged, _classify -> "isoforms/${ref_name}/cohort" }
+    }
+    requant {
+        path { meta, _files -> "isoforms/${meta.ref}/requant/${meta.id}" }
+    }
+    high_conf {
+        path { ref_name, _files -> "isoforms/${ref_name}/high_confidence" }
     }
 }
 

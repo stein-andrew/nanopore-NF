@@ -65,3 +65,57 @@ process ISOQUANT_DISCOVER {
     touch ${id}.transcript_models.gtf ${id}.discovered_transcript_counts.tsv ${id}.transcript_counts.tsv ${id}.isoquant.log
     """
 }
+
+// IsoQuant requantification, per sample, against the cohort catalogue (SALRR: every sample's
+// reads re-assigned to the unified catalogue). --no_model_construction: assign and count
+// only, no new models. The catalogue has gene lines (gtf_add_genes.py), so
+// --complete_genedb holds. read_assignments.tsv.gz in its output maps each read to a
+// catalogue transcript: that is what isoform-level mod and poly(A) summaries use later.
+// HOME and the tmp database: as in ISOQUANT_DISCOVER. bin/check_requant_ids.sh then fails
+// the task unless every counted transcript is a catalogue ID (see that script for why).
+
+process ISOQUANT_REQUANT {
+    tag "${meta.id}:${meta.ref}"
+    label 'cpu_align'
+    container "${params.container_dir}/${params.isoform_image}"
+
+    input:
+    tuple val(meta), path(bam), path(bai), path(fasta), path(fai), path(catalogue)
+
+    output:
+    tuple val(meta), path("${meta.id}.transcript_counts.tsv"), emit: counts
+    tuple val(meta), path("${meta.id}.*"), emit: out
+
+    script:
+    def id = meta.id
+    """
+    export HOME=\$PWD/home
+    mkdir -p "\$HOME"
+    genedb=\$(mktemp -d "\${TMPDIR:-/tmp}/iq_genedb.XXXXXX")
+    isoquant \\
+        --data_type nanopore \\
+        --reference ${fasta} \\
+        --genedb ${catalogue} --complete_genedb --genedb_output "\$genedb" \\
+        --no_model_construction \\
+        --bam ${bam} \\
+        --labels ${id} \\
+        --prefix ${id} \\
+        --threads ${task.cpus} \\
+        ${params.isoquant_args} \\
+        -o iq
+    rm -rf "\$genedb" iq/${id}/aux
+
+    mv iq/${id}/${id}.* .
+    mv iq/isoquant.log ${id}.isoquant.log
+    rm -rf iq
+
+    check_requant_ids.sh ${catalogue} ${id}.transcript_counts.tsv
+    """
+
+    // Stub test for pipeline integration
+    stub:
+    def id = meta.id
+    """
+    touch ${id}.transcript_counts.tsv ${id}.read_assignments.tsv.gz ${id}.isoquant.log
+    """
+}

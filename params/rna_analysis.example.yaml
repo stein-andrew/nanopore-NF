@@ -23,3 +23,4 @@ outdir: /scratch/stein.an/ont-pipeline/results/CHANGE_ME_rna    # must be on /sc
 # isoform_min_cpm: 1                            # per-sample: IsoQuant CPM > this, StringTie TPM > this
 # isomatch_merge_args: ''
 # isomatch_classify_args: ''
+# cohort_min_median_cpm: 1                     # cohort: median CPM across samples > this

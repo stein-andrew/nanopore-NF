@@ -9,8 +9,8 @@ StringTie models, by an attribute on the transcript lines:
     filter_models.py --gtf S.stringtie.gtf --attr TPM \
         --min 1 --out S.stringtie.filtered.gtf --report S.stringtie.filtered.tsv
 
---counts: CPM = count / total assigned reads x 1e6, where "total assigned" is the sum over
-    real features. IsoQuant's __ambiguous / __no_feature / __not_aligned summary rows are
+--counts: CPM = count / total assigned reads x 1e6, where "total assigned" is the sum over real
+    features. IsoQuant's __ambiguous / __no_feature / __not_aligned summary rows are
     excluded: counting __no_feature as assigned would deflate every CPM by however many
     reads hit no model (20x in Connor's yeast run).
 --attr: StringTie reports no read counts, so its per-transcript TPM stands in for CPM. SALRR
@@ -20,13 +20,21 @@ A transcript is kept when its value is strictly greater than --min. Lines carryi
 transcript_id are kept or dropped with that transcript; gene lines are kept when any of
 their transcripts is; comment lines pass through. Exits non-zero, rather than guessing, if
 a model has no count, a transcript line lacks the attribute, or nothing was assigned.
+
+read_gtf, read_counts, cpm and write_subset are shared with cohort_cpm.py, so the
+per-sample and cohort filters cannot drift apart on what CPM means.
 """
 import argparse
+import gzip
 import re
 import sys
 
 TX_ID = re.compile(r'transcript_id "([^"]+)"')
 GENE_ID = re.compile(r'gene_id "([^"]+)"')
+
+
+def open_text(path):
+    return gzip.open(path, 'rt') if path.endswith('.gz') else open(path)
 
 
 def attribute(attrs, key):
@@ -37,7 +45,7 @@ def attribute(attrs, key):
 
 def read_gtf(path):
     """All lines, plus transcript_id -> gene_id for every transcript in the file."""
-    with open(path) as fh:
+    with open_text(path) as fh:
         lines = fh.read().splitlines()
     tx_gene = {}
     for line in lines:
@@ -53,10 +61,10 @@ def read_gtf(path):
     return lines, tx_gene
 
 
-def cpm_from_counts(path):
-    """transcript_id -> CPM, and the total assigned reads it was computed from."""
+def read_counts(path):
+    """feature -> count from an IsoQuant feature_id/count TSV, summary (__) rows excluded."""
     counts = {}
-    with open(path) as fh:
+    with open_text(path) as fh:
         fh.readline()                                   # feature_id <tab> count
         for line in fh:
             if not line.strip():
@@ -65,10 +73,34 @@ def cpm_from_counts(path):
             if feature.startswith('__'):
                 continue
             counts[feature] = float(count)
+    return counts
+
+
+def cpm(counts, path):
+    """feature -> CPM over the total assigned reads, and that total."""
     total = sum(counts.values())
     if total <= 0:
         sys.exit(f"{path}: no assigned reads, so CPM is undefined")
     return {tx: c / total * 1e6 for tx, c in counts.items()}, total
+
+
+def write_subset(lines, tx_gene, keep, out_path):
+    """Write the lines of kept transcripts, the gene lines of their genes, and comments."""
+    keep_genes = {tx_gene[tx] for tx in keep}
+    with open(out_path, 'w') as out:
+        for line in lines:
+            if line.startswith('#') or not line.strip():
+                out.write(line + '\n')
+                continue
+            cols = line.split('\t')
+            tx = TX_ID.search(cols[8])
+            if tx:
+                if tx.group(1) in keep:
+                    out.write(line + '\n')
+            else:
+                gene = GENE_ID.search(cols[8])
+                if gene and gene.group(1) in keep_genes:
+                    out.write(line + '\n')
 
 
 def values_from_attr(lines, key, path):
@@ -100,7 +132,7 @@ def main():
 
     lines, tx_gene = read_gtf(args.gtf)
     if args.counts:
-        values, total = cpm_from_counts(args.counts)
+        values, total = cpm(read_counts(args.counts), args.counts)
         metric = 'CPM'
     else:
         values, total = values_from_attr(lines, args.attr, args.gtf), None
@@ -111,22 +143,7 @@ def main():
         sys.exit(f"{len(no_value)} transcript(s) in {args.gtf} have no {metric}, e.g. {no_value[:3]}")
 
     keep = {tx for tx in tx_gene if values[tx] > args.min}
-    keep_genes = {tx_gene[tx] for tx in keep}
-
-    with open(args.out, 'w') as out:
-        for line in lines:
-            if line.startswith('#') or not line.strip():
-                out.write(line + '\n')
-                continue
-            cols = line.split('\t')
-            tx = TX_ID.search(cols[8])
-            if tx:
-                if tx.group(1) in keep:
-                    out.write(line + '\n')
-            else:
-                gene = GENE_ID.search(cols[8])
-                if gene and gene.group(1) in keep_genes:
-                    out.write(line + '\n')
+    write_subset(lines, tx_gene, keep, args.out)
 
     with open(args.report, 'w') as rep:
         rep.write(f"transcript_id\tgene_id\t{metric}\tkept\n")
