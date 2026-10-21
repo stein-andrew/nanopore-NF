@@ -71,6 +71,8 @@ process ISOQUANT_DISCOVER {
 // only, no new models. The catalogue has gene lines (gtf_add_genes.py), so
 // --complete_genedb holds. read_assignments.tsv.gz in its output maps each read to a
 // catalogue transcript: that is what isoform-level mod and poly(A) summaries use later.
+// params.isoquant_requant_args (default --transcript_quantification unique_only, as SALRR)
+// comes after params.isoquant_args, so it wins if both set the same flag.
 // HOME and the tmp database: as in ISOQUANT_DISCOVER. bin/check_requant_ids.sh then fails
 // the task unless every counted transcript is a catalogue ID (see that script for why).
 
@@ -102,6 +104,7 @@ process ISOQUANT_REQUANT {
         --prefix ${id} \\
         --threads ${task.cpus} \\
         ${params.isoquant_args} \\
+        ${params.isoquant_requant_args} \\
         -o iq
     rm -rf "\$genedb" iq/${id}/aux
 

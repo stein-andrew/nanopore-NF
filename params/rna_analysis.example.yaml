@@ -18,7 +18,17 @@ outdir: /scratch/stein.an/ont-pipeline/results/CHANGE_ME_rna    # must be on /sc
 
 # ---- isoform curation (SALRR) -----------------------------------------------
 # isoform_min_mapq: 40                          # primary alignments with MAPQ >= this
-# isoquant_args: ''                             # beyond -d nanopore --genedb --complete_genedb
+# isoquant_args: ''                             # extra IsoQuant flags for BOTH runs (discovery + requantification)
+#
+# Requantification against the cohort catalogue: how reads become transcript counts, and so
+# which transcripts pass the median-CPM filter.
+#   unique_only (default, as SALRR): only reads assigned to exactly one isoform count. An
+#     isoform whose reads all also fit a near-identical sibling gets 0 and is not kept.
+#   To also count those reads, split between their candidate isoforms, use instead:
+#     isoquant_requant_args: '--transcript_quantification with_ambiguous'
+#   (IsoQuant also accepts unique_splicing_consistent, unique_inconsistent, all.)
+# isoquant_requant_args: '--transcript_quantification unique_only'
+#
 # stringtie_args: '-L -c 2.5 -f 0.05 -t --fr'   # SALRR's flags + --fr for direct RNA
 # isoform_min_cpm: 1                            # per-sample: IsoQuant CPM > this, StringTie TPM > this
 # isomatch_merge_args: ''
