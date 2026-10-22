@@ -48,3 +48,10 @@ outdir: /scratch/stein.an/ont-pipeline/results/CHANGE_ME_rna    # must be on /sc
 # with a single gene), at sample-level sites with FP-corrected percent >= this. 20 = the
 # final-stage sites; lower it to also find sites diluted below 20% sample-wide.
 # feature_mods_candidate_pct: 20
+
+# ---- poly(A) tails ------------------------------------------------------------
+# Missing and pt <= 0 tails are always dropped. Caps censor tails at the estimator's maximum:
+# 0 = off, right for Dorado direct RNA (no maximum); SALRR's cDNA values were 400 / 250.
+# polya_cap_nuclear: 0
+# polya_cap_mito: 0
+# polya_min_reads: 10                           # tails a feature needs to be in the BEDs

@@ -9,6 +9,7 @@
 //   per sample   modkit sample-probs -> per-base thresholds -> modkit pileup (raw)
 //                -> Nvalid_cov >= 20 -> percent >= 20; gIVT FP correction -> corrected >= 20
 //   per sample   at the final-stage sites: modification levels per isoform and per gene
+//   per sample   poly(A) tail lengths per read, isoform and gene (chrM apart, SALRR's exclusions)
 //
 // Example Usage:
 //   nextflow run RNA_analysis.nf -profile explorer,rna -params-file params/run1_rna.yaml
@@ -29,6 +30,7 @@ include { ISOFORM_CONSENSUS }                   from './modules/isoform/consensu
 include { COHORT_CATALOGUE; COHORT_FILTER }     from './modules/isoform/cohort.nf'
 include { MODKIT_PILEUP; MOD_STAGES }           from './modules/mods/modkit.nf'
 include { MOD_FEATURES }                        from './modules/mods/features.nf'
+include { POLYA_FEATURES }                      from './modules/polya/polya.nf'
 
 workflow {
     main:
@@ -124,6 +126,17 @@ workflow {
         ch_errtab
     )
 
+    // ---- poly(A) tails per read, isoform and gene
+    POLYA_FEATURES(
+        channel.fromList(rows)                                      // (meta, Stage 1 bam, bai)
+            .join(ISOQUANT_REQUANT.out.assignments)
+            .map { meta, bam, bai, assign -> tuple(meta.ref, meta, bam, bai, assign) }
+            .combine(COHORT_CATALOGUE.out.catalogue, by: 0)
+            .combine(COHORT_CATALOGUE.out.classification, by: 0)
+            .map { _ref, meta, bam, bai, assign, catalogue, classification ->
+                tuple(meta, bam, bai, assign, catalogue, classification) }
+    )
+
     publish:
     mapq_qc   = FILTER_MAPQ.out.flagstat
     isoquant  = ISOQUANT_DISCOVER.out.out
@@ -135,6 +148,7 @@ workflow {
     mods_pileup = MODKIT_PILEUP.out.out
     mods_stages = MOD_STAGES.out.out
     mods_features = MOD_FEATURES.out
+    polya = POLYA_FEATURES.out
 }
 
 output {
@@ -167,6 +181,9 @@ output {
     }
     mods_features {
         path { meta, _files -> "mods/${meta.ref}/${meta.id}" }
+    }
+    polya {
+        path { meta, _files -> "polya/${meta.ref}/${meta.id}" }
     }
 }
 
