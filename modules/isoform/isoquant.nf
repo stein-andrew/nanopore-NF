@@ -86,6 +86,7 @@ process ISOQUANT_REQUANT {
 
     output:
     tuple val(meta), path("${meta.id}.transcript_counts.tsv"), emit: counts
+    tuple val(meta), path("${meta.id}.read_assignments.tsv.gz"), emit: assignments
     tuple val(meta), path("${meta.id}.*"), emit: out
 
     script:

@@ -43,3 +43,8 @@ outdir: /scratch/stein.an/ont-pipeline/results/CHANGE_ME_rna    # must be on /sc
 # mod_filter_thresholds: ''
 # mods_min_coverage: 20                         # Nvalid_cov >= this
 # mods_min_percent: 20                          # percent modified >= this (raw and FP-corrected)
+#
+# Modification levels per isoform and per gene (reads uniquely assigned to an isoform; reads
+# with a single gene), at sample-level sites with FP-corrected percent >= this. 20 = the
+# final-stage sites; lower it to also find sites diluted below 20% sample-wide.
+# feature_mods_candidate_pct: 20

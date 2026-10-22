@@ -27,6 +27,7 @@ process MODKIT_PILEUP {
 
     output:
     tuple val(meta), path("${prefix}.raw.bed"), path("${prefix}.givt_flags.txt"), emit: pileup
+    tuple val(meta), path("${prefix}.modkit_flags.txt"), path("${prefix}.givt_flags.txt"), emit: flags
     tuple val(meta),
           path("${prefix}.{raw.bed,thresholds.tsv,modkit_flags.txt,givt_flags.txt,sample_probs.txt,sample_probs.log,pileup.log}"),
           path("${prefix}.sample_probs/*", arity: '0..*'), emit: out
@@ -82,8 +83,10 @@ process MOD_STAGES {
     path(error_table)
 
     output:
+    // the FP-corrected coverage stage goes on to the isoform/gene-level step (features.nf)
+    tuple val(meta), path("${prefix}.cov${min_cov}_fpcorr.bed"), emit: fpcorr
     tuple val(meta),
-          path("${prefix}.{cov${min_cov}.bed,cov${min_cov}_pct${min_pct}.bed,cov${min_cov}_fpcorr.bed,cov${min_cov}_fpcorr_pct${min_pct}.bed,mod_stages.tsv,fpcorr.log.gz}")
+          path("${prefix}.{cov${min_cov}.bed,cov${min_cov}_pct${min_pct}.bed,cov${min_cov}_fpcorr.bed,cov${min_cov}_fpcorr_pct${min_pct}.bed,mod_stages.tsv,fpcorr.log.gz}"), emit: out
 
     script:
     prefix  = meta.id

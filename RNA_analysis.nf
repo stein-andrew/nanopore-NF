@@ -8,6 +8,7 @@
 //
 //   per sample   modkit sample-probs -> per-base thresholds -> modkit pileup (raw)
 //                -> Nvalid_cov >= 20 -> percent >= 20; gIVT FP correction -> corrected >= 20
+//   per sample   at the final-stage sites: modification levels per isoform and per gene
 //
 // Example Usage:
 //   nextflow run RNA_analysis.nf -profile explorer,rna -params-file params/run1_rna.yaml
@@ -27,6 +28,7 @@ include { STRINGTIE }                           from './modules/isoform/stringti
 include { ISOFORM_CONSENSUS }                   from './modules/isoform/consensus.nf'
 include { COHORT_CATALOGUE; COHORT_FILTER }     from './modules/isoform/cohort.nf'
 include { MODKIT_PILEUP; MOD_STAGES }           from './modules/mods/modkit.nf'
+include { MOD_FEATURES }                        from './modules/mods/features.nf'
 
 workflow {
     main:
@@ -107,6 +109,21 @@ workflow {
         ch_errtab
     )
 
+    // ---- modification levels per isoform and per gene, at the final-stage sites
+    MOD_FEATURES(
+        channel.fromList(rows)                                      // (meta, Stage 1 bam, bai)
+            .join(MOD_STAGES.out.fpcorr)
+            .join(MODKIT_PILEUP.out.flags)
+            .join(ISOQUANT_REQUANT.out.assignments)                 // (meta, bam, bai, fpcorr, modkit_flags, givt_flags, assignments)
+            .map { meta, bam, bai, fpcorr, mflags, gflags, assign -> tuple(meta.ref, meta, bam, bai, fpcorr, mflags, gflags, assign) }
+            .combine(COHORT_CATALOGUE.out.catalogue, by: 0)
+            .combine(COHORT_CATALOGUE.out.classification, by: 0)
+            .combine(ch_ref, by: 0)
+            .map { _ref, meta, bam, bai, fpcorr, mflags, gflags, assign, catalogue, classification, fasta, fai ->
+                tuple(meta, bam, bai, fpcorr, mflags, gflags, assign, catalogue, classification, fasta, fai) },
+        ch_errtab
+    )
+
     publish:
     mapq_qc   = FILTER_MAPQ.out.flagstat
     isoquant  = ISOQUANT_DISCOVER.out.out
@@ -116,7 +133,8 @@ workflow {
     requant   = ISOQUANT_REQUANT.out.out
     high_conf = COHORT_FILTER.out
     mods_pileup = MODKIT_PILEUP.out.out
-    mods_stages = MOD_STAGES.out
+    mods_stages = MOD_STAGES.out.out
+    mods_features = MOD_FEATURES.out
 }
 
 output {
@@ -145,6 +163,9 @@ output {
         path { meta, _files, _probs -> "mods/${meta.ref}/${meta.id}" }
     }
     mods_stages {
+        path { meta, _files -> "mods/${meta.ref}/${meta.id}" }
+    }
+    mods_features {
         path { meta, _files -> "mods/${meta.ref}/${meta.id}" }
     }
 }
