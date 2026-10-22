@@ -1,0 +1,48 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+# Stage 2 image for RNA modifications: modkit 0.5.0 (sample-probs, pileup) and Python for
+# the bin/ scripts that run in it: mod_thresholds.py, mod_stages.sh, fp_correct.py (numpy,
+# pandas, polars), and gIVT's IVT_fp_correction.py (pysam, pandas, numpy, tqdm), kept for
+# checking fp_correct.py against it.
+#
+#   containers/build.sh mods        -> $CONTAINER_DIR/mods.sif (params.mods_image)
+#
+# modkit stays at 0.5.0, as in the Stage 1 RNA image: RNA keeps --max-depth at the int32 limit.
+# pandas/pysam are left to the solver and recorded by %test; gIVT was checked with pandas 3.0.
+
+%labels
+    Stage       2 (RNA modifications)
+    DataType    RNA
+    Modkit      0.5.0
+    Samtools    1.21
+
+%post -c /bin/bash
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends curl ca-certificates bzip2 procps
+    rm -rf /var/lib/apt/lists/*
+
+    curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C /usr/local bin/micromamba
+    /usr/local/bin/micromamba create -y -p /opt/conda -c conda-forge -c bioconda \
+        python=3.12 ont-modkit=0.5.0 samtools=1.21 pysam pandas numpy tqdm polars
+    /usr/local/bin/micromamba clean -afy
+
+%environment
+    export PATH=/opt/conda/bin:/usr/local/bin:$PATH
+
+%runscript
+    exec "$@"
+
+%test
+    # /bin/sh, so no pipefail; set -e stops the build at the first failing line.
+    set -e
+    modkit --version
+    samtools --version | head -1
+    python3 -c 'import pysam, pandas, numpy, tqdm, polars; print("pysam", pysam.__version__, "pandas", pandas.__version__, "numpy", numpy.__version__, "polars", polars.__version__)'
+
+%help
+    Build (see containers/build.sh):
+        apptainer build --fakeroot mods.sif mods.def
+    Used by RNA_analysis.nf as params.mods_image.

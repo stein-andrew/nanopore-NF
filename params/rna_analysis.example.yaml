@@ -34,3 +34,12 @@ outdir: /scratch/stein.an/ont-pipeline/results/CHANGE_ME_rna    # must be on /sc
 # isomatch_merge_args: ''
 # isomatch_classify_args: ''
 # cohort_min_median_cpm: 1                     # cohort: median CPM across samples > this
+
+# ---- modifications (modkit pileup + gIVT false-positive correction) ---------
+# Per-base call thresholds for BOTH modkit pileup and gIVT ('' = estimate per sample with
+# modkit sample-probs). To use the same thresholds for every sample, all four bases:
+#   mod_filter_thresholds: 'A:0.9 C:0.85 G:0.95 T:0.9'
+# They must be within [0.70, 0.99), the range gIVT's error table can correct.
+# mod_filter_thresholds: ''
+# mods_min_coverage: 20                         # Nvalid_cov >= this
+# mods_min_percent: 20                          # percent modified >= this (raw and FP-corrected)

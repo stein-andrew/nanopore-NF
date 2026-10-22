@@ -6,6 +6,9 @@
 //   per sample   IsoQuant requantification against the catalogue
 //   cohort       median CPM across samples > 1 -> high-confidence transcripts
 //
+//   per sample   modkit sample-probs -> per-base thresholds -> modkit pileup (raw)
+//                -> Nvalid_cov >= 20 -> percent >= 20; gIVT FP correction -> corrected >= 20
+//
 // Example Usage:
 //   nextflow run RNA_analysis.nf -profile explorer,rna -params-file params/run1_rna.yaml
 //   nextflow run RNA_analysis.nf -profile explorer,rna,stub -stub-run -params-file params/run1_rna.yaml \
@@ -23,6 +26,7 @@ include { ISOQUANT_DISCOVER; ISOQUANT_REQUANT } from './modules/isoform/isoquant
 include { STRINGTIE }                           from './modules/isoform/stringtie.nf'
 include { ISOFORM_CONSENSUS }                   from './modules/isoform/consensus.nf'
 include { COHORT_CATALOGUE; COHORT_FILTER }     from './modules/isoform/cohort.nf'
+include { MODKIT_PILEUP; MOD_STAGES }           from './modules/mods/modkit.nf'
 
 workflow {
     main:
@@ -34,7 +38,9 @@ workflow {
     validateParams(refs)
     log.info "RNA_analysis.nf: ${rows.size()} BAM(s), references=${refs.join(',')}, " +
              "MAPQ >= ${params.isoform_min_mapq}, per-sample model filter > ${params.isoform_min_cpm}, " +
-             "cohort median CPM > ${params.cohort_min_median_cpm}"
+             "cohort median CPM > ${params.cohort_min_median_cpm}; " +
+             "mod thresholds ${params.mod_filter_thresholds ?: 'from sample-probs'}, " +
+             "stages cov >= ${params.mods_min_coverage}, pct >= ${params.mods_min_percent}"
 
     // references: (ref, fasta, fai) and (ref, gtf)
     ch_ref = FAIDX(channel.fromList(refs.collect { ref -> tuple(ref, file(params.genomes[ref], checkIfExists: true)) }))
@@ -89,6 +95,18 @@ workflow {
             .combine(COHORT_CATALOGUE.out.classification, by: 0)    // (ref, ids, counts, catalogue, classification)
     )
 
+    // ---- modifications, on the Stage 1 BAM: every primary alignment, not the MAPQ >= 40
+    // subset that isoform curation uses
+    ch_errtab = channel.value(file(params.givt_error_table, checkIfExists: true))
+    MODKIT_PILEUP(channel.fromList(rows))
+    MOD_STAGES(
+        MODKIT_PILEUP.out.pileup
+            .map { meta, bed, flags -> tuple(meta.ref, meta, bed, flags) }
+            .combine(ch_ref, by: 0)
+            .map { _ref, meta, bed, flags, fasta, fai -> tuple(meta, bed, flags, fasta, fai) },
+        ch_errtab
+    )
+
     publish:
     mapq_qc   = FILTER_MAPQ.out.flagstat
     isoquant  = ISOQUANT_DISCOVER.out.out
@@ -97,6 +115,8 @@ workflow {
     cohort    = COHORT_CATALOGUE.out.out
     requant   = ISOQUANT_REQUANT.out.out
     high_conf = COHORT_FILTER.out
+    mods_pileup = MODKIT_PILEUP.out.out
+    mods_stages = MOD_STAGES.out
 }
 
 output {
@@ -120,6 +140,12 @@ output {
     }
     high_conf {
         path { ref_name, _files -> "isoforms/${ref_name}/high_confidence" }
+    }
+    mods_pileup {
+        path { meta, _files, _probs -> "mods/${meta.ref}/${meta.id}" }
+    }
+    mods_stages {
+        path { meta, _files -> "mods/${meta.ref}/${meta.id}" }
     }
 }
 
@@ -169,6 +195,13 @@ def validateParams(refs) {
         error("RNA_analysis.nf: " + "pick a cluster with -profile explorer")
     if( !params.isoform_image )
         error("RNA_analysis.nf: " + "isoform_image is not set (conf/rna.config)")
+    if( !params.mods_image )
+        error("RNA_analysis.nf: " + "mods_image is not set (conf/rna.config)")
+    if( !params.givt_error_table || params.givt_error_table.toString().contains('CHANGE_ME') )
+        error("RNA_analysis.nf: " + "givt_error_table is not set: point it at the gIVT 9mer table in the cluster profile")
+    // exists isn't enough: a directory exists too, and gIVT only fails on it after the pileup
+    if( !file(params.givt_error_table).isFile() )
+        error("RNA_analysis.nf: " + "givt_error_table must be the table file itself, not a directory or a missing path: ${params.givt_error_table}")
     refs.each { ref ->
         if( !params.genomes[ref] )
             error("RNA_analysis.nf: " + "no FASTA for reference '${ref}' in params.genomes for this cluster profile")
