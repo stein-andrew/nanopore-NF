@@ -1,0 +1,28 @@
+Bootstrap: docker
+From: hkubal/clair3-rna@sha256:9ebf1b075f4a4f86eb35f7cfd11d74ab75056c07ed65211abe9eb5fc3483982b
+
+# Clair3-RNA (HKU-BAL), RNA small-variant calling for Stage 2: v0.2.2, the current release.
+# Pinned by digest, not tag: a tag can be moved to another image, a digest cannot. On Docker
+# Hub this digest is both v0.2.2 and latest (pushed 2025-04-08). To check or re-pin:
+#   curl -s https://hub.docker.com/v2/repositories/hkubal/clair3-rna/tags?page_size=50
+#
+#   containers/build.sh clair3-rna     -> $CONTAINER_DIR/clair3-rna.sif (params.clair3_rna_image)
+
+%labels
+    Stage       2 (RNA variant calling)
+    Clair3RNA   0.2.2 (hkubal/clair3-rna, pinned by digest)
+
+%test
+    # /bin/sh, so no pipefail; set -e stops the build at the first failing line.
+    set -e
+    /opt/bin/run_clair3_rna --help > /dev/null
+    echo "run_clair3_rna: ok"
+    # the direct-RNA model the pipeline uses must be in the image
+    m=$(find /opt -maxdepth 7 -type d -name ont_dorado_drna004 2>/dev/null | head -n1)
+    [ -n "$m" ] || { echo "no ont_dorado_drna004 model under /opt"; exit 1; }
+    echo "ont_dorado_drna004 model: $m"
+
+%help
+    Build (see containers/build.sh):
+        apptainer build --fakeroot clair3-rna.sif clair3-rna.def
+    Used by RNA_analysis.nf as params.clair3_rna_image.

@@ -10,6 +10,7 @@
 //                -> Nvalid_cov >= 20 -> percent >= 20; gIVT FP correction -> corrected >= 20
 //   per sample   at the final-stage sites: modification levels per isoform and per gene
 //   per sample   poly(A) tail lengths per read, isoform and gene (chrM apart, SALRR's exclusions)
+//   per sample   Clair3-RNA small variants (phasing model, REDIportal editing tags)
 //
 // Example Usage:
 //   nextflow run RNA_analysis.nf -profile explorer,rna -params-file params/run1_rna.yaml
@@ -31,6 +32,7 @@ include { COHORT_CATALOGUE; COHORT_FILTER }     from './modules/isoform/cohort.n
 include { MODKIT_PILEUP; MOD_STAGES }           from './modules/mods/modkit.nf'
 include { MOD_FEATURES }                        from './modules/mods/features.nf'
 include { POLYA_FEATURES }                      from './modules/polya/polya.nf'
+include { CLAIR3_RNA }                          from './modules/variants/clair3_rna.nf'
 
 workflow {
     main:
@@ -137,6 +139,14 @@ workflow {
                 tuple(meta, bam, bai, assign, catalogue, classification) }
     )
 
+    // ---- small variants with Clair3-RNA, on the Stage 1 BAM
+    CLAIR3_RNA(
+        channel.fromList(rows)
+            .map { meta, bam, bai -> tuple(meta.ref, meta, bam, bai) }
+            .combine(ch_ref, by: 0)
+            .map { _ref, meta, bam, bai, fasta, fai -> tuple(meta, bam, bai, fasta, fai) }
+    )
+
     publish:
     mapq_qc   = FILTER_MAPQ.out.flagstat
     isoquant  = ISOQUANT_DISCOVER.out.out
@@ -149,6 +159,7 @@ workflow {
     mods_stages = MOD_STAGES.out.out
     mods_features = MOD_FEATURES.out
     polya = POLYA_FEATURES.out
+    variants = CLAIR3_RNA.out.out
 }
 
 output {
@@ -184,6 +195,9 @@ output {
     }
     polya {
         path { meta, _files -> "polya/${meta.ref}/${meta.id}" }
+    }
+    variants {
+        path { meta, _files -> "variants/${meta.ref}/${meta.id}" }
     }
 }
 
@@ -235,6 +249,8 @@ def validateParams(refs) {
         error("RNA_analysis.nf: " + "isoform_image is not set (conf/rna.config)")
     if( !params.mods_image )
         error("RNA_analysis.nf: " + "mods_image is not set (conf/rna.config)")
+    if( !params.clair3_rna_image )
+        error("RNA_analysis.nf: " + "clair3_rna_image is not set (conf/rna.config)")
     if( !params.givt_error_table || params.givt_error_table.toString().contains('CHANGE_ME') )
         error("RNA_analysis.nf: " + "givt_error_table is not set: point it at the gIVT 9mer table in the cluster profile")
     // exists isn't enough: a directory exists too, and gIVT only fails on it after the pileup

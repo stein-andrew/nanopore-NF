@@ -1,0 +1,42 @@
+Bootstrap: docker
+From: ubuntu:24.04
+
+# bcftools + htslib, for building the genome-wide variant references
+# (scripts/fetch_variant_refs.sh) and for annotating Clair3-RNA calls as known / novel (step 6).
+# bioconda's htslib is built with libcurl, so bcftools reads gnomAD's https URLs directly.
+#
+#   containers/build.sh variants      -> $CONTAINER_DIR/variants.sif
+
+%labels
+    Stage       2 (variant references and annotation)
+    Bcftools    1.21
+    Htslib      1.21
+
+%post -c /bin/bash
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends curl ca-certificates bzip2 procps
+    rm -rf /var/lib/apt/lists/*
+
+    curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C /usr/local bin/micromamba
+    /usr/local/bin/micromamba create -y -p /opt/conda -c conda-forge -c bioconda \
+        bcftools=1.21 htslib=1.21
+    /usr/local/bin/micromamba clean -afy
+
+%environment
+    export PATH=/opt/conda/bin:/usr/local/bin:$PATH
+
+%runscript
+    exec "$@"
+
+%test
+    # /bin/sh, so no pipefail; set -e stops the build at the first failing line.
+    set -e
+    bcftools --version | head -1
+    bgzip --version | head -1
+    tabix --version | head -1
+
+%help
+    Build (see containers/build.sh):
+        apptainer build --fakeroot variants.sif variants.def
