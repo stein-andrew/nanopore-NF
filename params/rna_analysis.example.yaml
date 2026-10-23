@@ -60,3 +60,4 @@ outdir: /scratch/stein.an/ont-pipeline/results/CHANGE_ME_rna    # must be on /sc
 # clair3_rna_platform: ont_dorado_drna004       # ont_r10_dorado_cdna for R10 cDNA
 # clair3_rna_phasing: true                      # --enable_phasing_model
 # clair3_rna_args: ''                           # e.g. '--ctg_name ...,chrM' to also call chrM
+# variants_dp_split: 10                         # summary splits novel calls at DP >= this

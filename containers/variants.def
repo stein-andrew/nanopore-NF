@@ -2,7 +2,9 @@ Bootstrap: docker
 From: ubuntu:24.04
 
 # bcftools + htslib, for building the genome-wide variant references
-# (scripts/fetch_variant_refs.sh) and for annotating Clair3-RNA calls as known / novel (step 6).
+# (scripts/fetch_variant_refs.sh) and for annotating Clair3-RNA calls as known / novel (step 6),
+# plus the Python that annotation's bin/known_novel.py needs (polars; pandas only for the
+# tests/reference copies that tests/compare_polars_port.sh checks it against).
 # bioconda's htslib is built with libcurl, so bcftools reads gnomAD's https URLs directly.
 #
 #   containers/build.sh variants      -> $CONTAINER_DIR/variants.sif
@@ -11,6 +13,7 @@ From: ubuntu:24.04
     Stage       2 (variant references and annotation)
     Bcftools    1.21
     Htslib      1.21
+    Python      3.12 (polars, numpy; pandas for tests/reference)
 
 %post -c /bin/bash
     set -euo pipefail
@@ -21,7 +24,7 @@ From: ubuntu:24.04
 
     curl -fsSL https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C /usr/local bin/micromamba
     /usr/local/bin/micromamba create -y -p /opt/conda -c conda-forge -c bioconda \
-        bcftools=1.21 htslib=1.21
+        bcftools=1.21 htslib=1.21 python=3.12 polars numpy pandas
     /usr/local/bin/micromamba clean -afy
 
 %environment
@@ -36,6 +39,7 @@ From: ubuntu:24.04
     bcftools --version | head -1
     bgzip --version | head -1
     tabix --version | head -1
+    python3 -c 'import polars, pandas, numpy; print("polars", polars.__version__, "pandas", pandas.__version__, "numpy", numpy.__version__)'
 
 %help
     Build (see containers/build.sh):

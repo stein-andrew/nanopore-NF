@@ -11,6 +11,7 @@
 //   per sample   at the final-stage sites: modification levels per isoform and per gene
 //   per sample   poly(A) tail lengths per read, isoform and gene (chrM apart, SALRR's exclusions)
 //   per sample   Clair3-RNA small variants (phasing model, REDIportal editing tags)
+//                -> known / novel / editing against gnomAD v4.1 (chrM: v3.1), with ClinVar
 //
 // Example Usage:
 //   nextflow run RNA_analysis.nf -profile explorer,rna -params-file params/run1_rna.yaml
@@ -33,6 +34,7 @@ include { MODKIT_PILEUP; MOD_STAGES }           from './modules/mods/modkit.nf'
 include { MOD_FEATURES }                        from './modules/mods/features.nf'
 include { POLYA_FEATURES }                      from './modules/polya/polya.nf'
 include { CLAIR3_RNA }                          from './modules/variants/clair3_rna.nf'
+include { KNOWN_NOVEL }                         from './modules/variants/known_novel.nf'
 
 workflow {
     main:
@@ -147,6 +149,20 @@ workflow {
             .map { _ref, meta, bam, bai, fasta, fai -> tuple(meta, bam, bai, fasta, fai) }
     )
 
+    // ---- known vs novel; the variant references are GRCh38, so other references are skipped
+    ch_varrefs = channel.value(tuple(
+        file(params.gnomad_nuclear), file("${params.gnomad_nuclear}.csi"),
+        file(params.gnomad_mito),    file("${params.gnomad_mito}.csi"),
+        file(params.clinvar),        file("${params.clinvar}.csi")))
+    KNOWN_NOVEL(
+        CLAIR3_RNA.out.vcf
+            .filter { meta, _vcf -> meta.ref == params.variant_refs_genome }
+            .map { meta, vcf -> tuple(meta.ref, meta, vcf) }
+            .combine(ch_ref, by: 0)
+            .map { _ref, meta, vcf, fasta, fai -> tuple(meta, vcf, fasta, fai) },
+        ch_varrefs
+    )
+
     publish:
     mapq_qc   = FILTER_MAPQ.out.flagstat
     isoquant  = ISOQUANT_DISCOVER.out.out
@@ -160,6 +176,7 @@ workflow {
     mods_features = MOD_FEATURES.out
     polya = POLYA_FEATURES.out
     variants = CLAIR3_RNA.out.out
+    variant_classes = KNOWN_NOVEL.out
 }
 
 output {
@@ -197,6 +214,9 @@ output {
         path { meta, _files -> "polya/${meta.ref}/${meta.id}" }
     }
     variants {
+        path { meta, _files -> "variants/${meta.ref}/${meta.id}" }
+    }
+    variant_classes {
         path { meta, _files -> "variants/${meta.ref}/${meta.id}" }
     }
 }
@@ -251,6 +271,15 @@ def validateParams(refs) {
         error("RNA_analysis.nf: " + "mods_image is not set (conf/rna.config)")
     if( !params.clair3_rna_image )
         error("RNA_analysis.nf: " + "clair3_rna_image is not set (conf/rna.config)")
+    // the variant references must be the files themselves, each with its .csi index
+    ['gnomad_nuclear', 'gnomad_mito', 'clinvar'].each { name ->
+        def path = params[name]
+        if( !path || !file(path).isFile() || !file("${path}.csi").isFile() )
+            error("RNA_analysis.nf: " + "${name} must be an indexed BCF (with ${name}.csi beside it); got '${path}'")
+    }
+    refs.findAll { r -> r != params.variant_refs_genome }.each { r ->
+        log.warn("RNA_analysis.nf: known/novel annotation needs ${params.variant_refs_genome} references; skipping ${r} samples")
+    }
     if( !params.givt_error_table || params.givt_error_table.toString().contains('CHANGE_ME') )
         error("RNA_analysis.nf: " + "givt_error_table is not set: point it at the gIVT 9mer table in the cluster profile")
     // exists isn't enough: a directory exists too, and gIVT only fails on it after the pileup

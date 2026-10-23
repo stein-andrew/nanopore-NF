@@ -24,21 +24,23 @@ Writes:
   <prefix>.isoform_polya.bed      isoforms with >= --min-reads tails, annotated ('#' header)
   <prefix>.gene_polya.bed         the same per gene
 """
+
 import argparse
-import os
 import re
 import sys
 
-import numpy as np
-import pandas as pd
+import polars as pl
 
 from feature_mods import annotations
+from tabular import read_tsv, write_tsv
 
 TX_ID = re.compile(r'transcript_id "([^"]+)"')
 GENE_ID = re.compile(r'gene_id "([^"]+)"')
 STATS = ['n_tails', 'median_pt', 'mean_pt', 'q25_pt', 'q75_pt', 'min_pt', 'max_pt']
 BED_COLS = ['chrom', 'start', 'end', 'name', 'score', 'strand', 'feature_id', 'gene_id', 'ref_gene_name',
             'ref_tx_id', 'structural_category', 'compartment'] + STATS
+FEATURE_COLS = ['level', 'feature_id'] + STATS + ['gene_id', 'ref_gene_name', 'ref_tx_id', 'structural_category',
+                                                   'chrom', 'start', 'end', 'strand', 'compartment']
 
 
 def spans(catalogue):
@@ -58,10 +60,20 @@ def spans(catalogue):
 
 
 def describe(df, by):
-    g = df.groupby(by)['pt']
-    return pd.DataFrame({'n_tails': g.size(), 'median_pt': g.median(), 'mean_pt': g.mean(),
-                         'q25_pt': g.quantile(0.25), 'q75_pt': g.quantile(0.75),
-                         'min_pt': g.min(), 'max_pt': g.max()})
+    """Per `by`: tails used, median, mean, linearly interpolated quartiles (as pandas), min, max."""
+    pt = pl.col('pt')
+    return df.group_by(by).agg(pl.len().alias('n_tails'), pt.median().alias('median_pt'), pt.mean().alias('mean_pt'),
+                               pt.quantile(0.25, interpolation='linear').alias('q25_pt'),
+                               pt.quantile(0.75, interpolation='linear').alias('q75_pt'),
+                               pt.min().alias('min_pt'), pt.max().alias('max_pt'))
+
+
+def frame(mapping, key, cols):
+    """dict key -> tuple of values as a DataFrame, for joining."""
+    data = {key: list(mapping)}
+    for i, c in enumerate(cols):
+        data[c] = [v[i] for v in mapping.values()]
+    return pl.DataFrame(data, schema={key: pl.Utf8, **{c: (pl.Int64 if c in ('start', 'end') else pl.Utf8) for c in cols}})
 
 
 def main():
@@ -77,90 +89,94 @@ def main():
     ap.add_argument('--prefix', required=True)
     args = ap.parse_args()
 
-    reads = pd.read_csv(args.reads, sep='\t', header=None, names=['read_id', 'contig', 'pt'],
-                        dtype={'read_id': str, 'contig': str, 'pt': str}, keep_default_na=False, na_filter=False)
-    if reads.empty:
+    reads = read_tsv(args.reads, ['read_id', 'contig', 'pt'])
+    if reads.height == 0:
         sys.exit(f"polya_features.py: {args.reads} has no reads")
-    pt = pd.to_numeric(reads['pt'].where(reads['pt'] != 'NA'), errors='coerce')
-    reads['pt'] = pt
-    reads['compartment'] = np.where(reads['contig'] == args.mito_contig, 'mito', 'nuclear')
-    cap = np.where(reads['compartment'] == 'mito', args.cap_mito, args.cap_nuclear)
-    reads['status'] = np.select([pt.isna(), pt <= 0, (cap > 0) & (pt >= cap)],
-                                ['missing', 'not_found', 'censored'], default='used')
+    pt = pl.col('pt').cast(pl.Float64, strict=False)          # 'NA' (no pt tag) -> null
+    comp = pl.when(pl.col('contig') == args.mito_contig).then(pl.lit('mito')).otherwise(pl.lit('nuclear'))
+    reads = reads.with_row_index('_i').with_columns(pt.alias('pt'), comp.alias('compartment'))
+    cap = pl.when(pl.col('compartment') == 'mito').then(pl.lit(args.cap_mito)).otherwise(pl.lit(args.cap_nuclear))
+    reads = reads.with_columns(
+        pl.when(pl.col('pt').is_null()).then(pl.lit('missing'))
+          .when(pl.col('pt') <= 0).then(pl.lit('not_found'))
+          .when((cap > 0) & (pl.col('pt') >= cap)).then(pl.lit('censored'))
+          .otherwise(pl.lit('used')).alias('status'))
 
-    if os.path.getsize(args.features) > 0:
-        feats = pd.read_csv(args.features, sep='\t', header=None, names=['read_id', 'isoform', 'gene'],
-                            dtype=str, keep_default_na=False, na_filter=False)
-    else:
-        feats = pd.DataFrame(columns=['read_id', 'isoform', 'gene'])
-    if feats['read_id'].duplicated().any():
+    feats = read_tsv(args.features, ['read_id', 'isoform', 'gene'])
+    if feats['read_id'].is_duplicated().any():
         sys.exit(f"polya_features.py: {args.features} lists a read more than once")
-    reads = reads.merge(feats, on='read_id', how='left').fillna({'isoform': '.', 'gene': '.'})
-    if reads['read_id'].duplicated().any():
+    if reads['read_id'].is_duplicated().any():
         sys.exit(f"polya_features.py: {args.reads} lists a read more than once (only primary alignments expected)")
-    used = reads[reads['status'] == 'used']
+    reads = reads.join(feats, on='read_id', how='left').sort('_i') \
+                 .with_columns(pl.col('isoform').fill_null('.'), pl.col('gene').fill_null('.'))
+    used = reads.filter(pl.col('status') == 'used')
     p = args.prefix
 
     with open(f"{p}.polya_summary.tsv", 'w') as out:
         out.write("compartment\treads\tmissing\tnot_found\tcensored\tused\tmedian_pt\tmean_pt\tq25_pt\tq75_pt\n")
-        for comp in ('nuclear', 'mito'):
-            r = reads[reads['compartment'] == comp]
-            u = r[r['status'] == 'used']['pt']
-            n = r['status'].value_counts()
-            stats = '\t'.join(f"{v:.2f}" if len(u) else 'NA'
-                              for v in ([u.median(), u.mean(), u.quantile(0.25), u.quantile(0.75)] if len(u) else [0] * 4))
-            out.write(f"{comp}\t{len(r)}\t{n.get('missing', 0)}\t{n.get('not_found', 0)}\t{n.get('censored', 0)}\t"
-                      f"{len(u)}\t{stats}\n")
+        for c in ('nuclear', 'mito'):
+            r = reads.filter(pl.col('compartment') == c)
+            u = r.filter(pl.col('status') == 'used')['pt']
+            n = dict(r.group_by('status').agg(pl.len()).iter_rows())
+            stats = '\t'.join(f"{v:.2f}" for v in (u.median(), u.mean(), u.quantile(0.25, interpolation='linear'),
+                                                    u.quantile(0.75, interpolation='linear'))) if u.len() else '\t'.join(['NA'] * 4)
+            out.write(f"{c}\t{r.height}\t{n.get('missing', 0)}\t{n.get('not_found', 0)}\t{n.get('censored', 0)}\t"
+                      f"{u.len()}\t{stats}\n")
 
-    hist = used.groupby(['compartment', 'pt']).size().rename('reads').reset_index()
-    hist['pt'] = hist['pt'].astype(np.int64) if (hist['pt'] % 1 == 0).all() else hist['pt']
-    hist.to_csv(f"{p}.polya_hist.tsv", sep='\t', index=False)
+    hist = used.group_by(['compartment', 'pt']).agg(pl.len().alias('reads')).sort(['compartment', 'pt'])
+    if hist.height and (hist['pt'] == hist['pt'].floor()).all():
+        hist = hist.with_columns(pl.col('pt').cast(pl.Int64))
+    write_tsv(hist, f"{p}.polya_hist.tsv")
 
-    out = reads[['read_id', 'contig', 'compartment', 'pt', 'status', 'isoform', 'gene']].copy()
-    out['pt'] = out['pt'].map(lambda v: '' if v != v else (str(int(v)) if v == int(v) else repr(v)))
-    out.to_csv(f"{p}.polya_reads.tsv.gz", sep='\t', index=False, compression='gzip')
+    pt_text = pl.when(pl.col('pt').is_null()).then(pl.lit('')) \
+                .when(pl.col('pt') == pl.col('pt').floor()).then(pl.col('pt').cast(pl.Int64).cast(pl.Utf8)) \
+                .otherwise(pl.col('pt').cast(pl.Utf8))
+    write_tsv(reads.select('read_id', 'contig', 'compartment', pt_text.alias('pt'), 'status', 'isoform', 'gene'),
+              f"{p}.polya_reads.tsv.gz")
 
     tx_gene, iso_info, gene_names = annotations(args.catalogue, args.classification)
-    where = spans(args.catalogue)
+    where = frame(spans(args.catalogue), 'feature_id', ['chrom', 'start', 'end', 'strand'])
+    iso_df = frame(iso_info, 'feature_id', ['iso_name', 'iso_tx', 'iso_cat'])
+    txg_df = frame({k: (v,) for k, v in tx_gene.items()}, 'feature_id', ['tx_gene'])
+    gn_df = frame({k: (v or '.',) for k, v in gene_names.items()}, 'feature_id', ['gene_name'])
     tables = []
-    for level, col in (('isoform', 'isoform'), ('gene', 'gene')):
-        d = describe(used[used[col] != '.'], col).reset_index().rename(columns={col: 'feature_id'})
-        d.insert(0, 'level', level)
+    for level in ('isoform', 'gene'):
+        d = describe(used.filter(pl.col(level) != '.'), level).rename({level: 'feature_id'}) \
+              .with_columns(pl.lit(level).alias('level'))
         if level == 'isoform':
-            info = d['feature_id'].map(lambda f: iso_info.get(f, ('.', '.', '.')))
-            d['gene_id'] = d['feature_id'].map(lambda f: tx_gene.get(f, '.'))
-            d['ref_gene_name'], d['ref_tx_id'], d['structural_category'] = info.str[0], info.str[1], info.str[2]
+            d = d.join(iso_df, on='feature_id', how='left').join(txg_df, on='feature_id', how='left').with_columns(
+                pl.col('tx_gene').fill_null('.').alias('gene_id'), pl.col('iso_name').fill_null('.').alias('ref_gene_name'),
+                pl.col('iso_tx').fill_null('.').alias('ref_tx_id'), pl.col('iso_cat').fill_null('.').alias('structural_category'))
         else:
-            d['gene_id'] = d['feature_id']
-            d['ref_gene_name'] = d['feature_id'].map(lambda g: gene_names.get(g, '.') or '.')
-            d['ref_tx_id'] = d['structural_category'] = '.'
-        loc = d['feature_id'].map(lambda f: where.get(f, ('.', -1, -1, '.')))
-        d['chrom'], d['start'], d['end'], d['strand'] = loc.str[0], loc.str[1], loc.str[2], loc.str[3]
-        d['compartment'] = np.where(d['chrom'] == args.mito_contig, 'mito', 'nuclear')
-        tables.append(d)
-    features = pd.concat(tables, ignore_index=True) if tables else pd.DataFrame()
-    unplaced = features[features['start'] < 0] if len(features) else features
-    if len(unplaced):
-        sys.exit(f"polya_features.py: {len(unplaced)} feature(s) not in {args.catalogue}, e.g. {list(unplaced['feature_id'][:3])}")
-    features = features.sort_values(['chrom', 'start', 'level', 'feature_id']).reset_index(drop=True)
-    features.to_csv(f"{p}.polya_features.tsv.gz", sep='\t', index=False, float_format='%.2f', compression='gzip')
+            d = d.join(gn_df, on='feature_id', how='left').with_columns(
+                pl.col('feature_id').alias('gene_id'), pl.col('gene_name').fill_null('.').alias('ref_gene_name'),
+                pl.lit('.').alias('ref_tx_id'), pl.lit('.').alias('structural_category'))
+        d = d.join(where, on='feature_id', how='left').with_columns(
+            pl.when(pl.col('chrom') == args.mito_contig).then(pl.lit('mito')).otherwise(pl.lit('nuclear')).alias('compartment'))
+        tables.append(d.select(FEATURE_COLS))
+    features = pl.concat(tables, how='vertical')
+    unplaced = features.filter(pl.col('start').is_null())
+    if unplaced.height:
+        sys.exit(f"polya_features.py: {unplaced.height} feature(s) not in {args.catalogue}, e.g. {unplaced['feature_id'].head(3).to_list()}")
+    features = features.sort(['chrom', 'start', 'level', 'feature_id'])
+    write_tsv(features, f"{p}.polya_features.tsv.gz", float_precision=2)
 
     for level in ('isoform', 'gene'):
-        sub = features[(features['level'] == level) & (features['n_tails'] >= args.min_reads)]
+        sub = features.filter((pl.col('level') == level) & (pl.col('n_tails') >= args.min_reads))
         with open(f"{p}.{level}_polya.bed", 'w') as fh:
             fh.write('#' + '\t'.join(BED_COLS) + '\n')
-            for r in sub.itertuples(index=False):
-                vals = [r.chrom, r.start, r.end, r.feature_id, min(int(r.n_tails), 1000), r.strand, r.feature_id,
-                        r.gene_id, r.ref_gene_name, r.ref_tx_id, r.structural_category, r.compartment, int(r.n_tails)]
-                vals += [f"{v:.2f}" for v in (r.median_pt, r.mean_pt, r.q25_pt, r.q75_pt, r.min_pt, r.max_pt)]
+            for r in sub.iter_rows(named=True):
+                vals = [r['chrom'], r['start'], r['end'], r['feature_id'], min(int(r['n_tails']), 1000), r['strand'],
+                        r['feature_id'], r['gene_id'], r['ref_gene_name'], r['ref_tx_id'], r['structural_category'],
+                        r['compartment'], int(r['n_tails'])]
+                vals += [f"{r[k]:.2f}" for k in ('median_pt', 'mean_pt', 'q25_pt', 'q75_pt', 'min_pt', 'max_pt')]
                 fh.write('\t'.join(map(str, vals)) + '\n')
 
-    counts = reads['status'].value_counts()
-    print(f"polya_features.py: {len(reads)} reads; used {counts.get('used', 0)}, not found {counts.get('not_found', 0)}, "
+    counts = dict(reads.group_by('status').agg(pl.len()).iter_rows())
+    in_bed = lambda lv: features.filter((pl.col('level') == lv) & (pl.col('n_tails') >= args.min_reads)).height  # noqa: E731
+    print(f"polya_features.py: {reads.height} reads; used {counts.get('used', 0)}, not found {counts.get('not_found', 0)}, "
           f"missing {counts.get('missing', 0)}, censored {counts.get('censored', 0)}; "
-          f"isoforms in BED {int(((features['level'] == 'isoform') & (features['n_tails'] >= args.min_reads)).sum()) if len(features) else 0}, "
-          f"genes {int(((features['level'] == 'gene') & (features['n_tails'] >= args.min_reads)).sum()) if len(features) else 0}",
-          file=sys.stderr)
+          f"isoforms in BED {in_bed('isoform')}, genes {in_bed('gene')}", file=sys.stderr)
 
 
 if __name__ == '__main__':

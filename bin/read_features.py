@@ -11,52 +11,59 @@ with '.' for none.
            ambiguous between isoforms of the same gene still count for that gene.
 
 IsoQuant writes one row per candidate isoform for ambiguous reads; the header line starts
-with '#'. Columns are found by name (read_id, isoform_id, gene_id, assignment_type).
+with '#'. Columns are found by name (read_id, isoform_id, gene_id, assignment_type) and taken
+by position. Output is sorted by read_id.
 """
+
 import gzip
+import io
 import sys
 
-import pandas as pd
+import polars as pl
 
-UNIQUE = {'unique', 'unique_minor_difference'}
+UNIQUE = ['unique', 'unique_minor_difference']
 NEEDED = ['read_id', 'isoform_id', 'gene_id', 'assignment_type']
-
-
-def header(path):
-    """(names, number of lines before the data) from the '#read_id ...' header."""
-    opener = gzip.open if path.endswith('.gz') else open
-    with opener(path, 'rt') as fh:
-        for n, line in enumerate(fh):
-            if not line.startswith('#'):
-                break
-            names = line.lstrip('#').rstrip('\n').split('\t')
-            if all(c in names for c in NEEDED):
-                return names, n + 1
-    sys.exit(f"read_features.py: {path}: no '#' header line with {', '.join(NEEDED)}")
 
 
 def main():
     if len(sys.argv) != 2:
         sys.exit(f"usage: {sys.argv[0]} <read_assignments.tsv[.gz]> > read_features.tsv")
     path = sys.argv[1]
-    names, skip = header(path)
-    cols = [names.index(c) for c in NEEDED]
-    ra = pd.read_csv(path, sep='\t', header=None, skiprows=skip, usecols=cols, dtype=str,
-                     keep_default_na=False, na_filter=False, comment=None)
-    ra.columns = [names[i] for i in sorted(cols)]
+    with (gzip.open(path, 'rb') if path.endswith('.gz') else open(path, 'rb')) as fh:
+        data = fh.read()
 
-    # vectorized: a read keeps its isoform only if it has exactly one unique-type row, and its
-    # gene only if all its rows name the same gene
-    uniq = ra[ra['assignment_type'].isin(UNIQUE) & (ra['isoform_id'] != '.')]
-    once = uniq[uniq['read_id'].map(uniq['read_id'].value_counts()) == 1].set_index('read_id')['isoform_id']
+    # the '#' header that names the columns, and where the data starts
+    names, start, offset = None, 0, 0
+    for line in io.BytesIO(data):
+        if not line.startswith(b'#'):
+            break
+        offset += len(line)
+        fields = line.decode().lstrip('#').rstrip('\n').split('\t')
+        if all(c in fields for c in NEEDED):
+            names, start = fields, offset
+    if names is None:
+        sys.exit(f"read_features.py: {path}: no '#' header line with {', '.join(NEEDED)}")
+    body = data[start:]
+    if not body.strip():
+        ra = pl.DataFrame({c: pl.Series(c, [], dtype=pl.Utf8) for c in NEEDED})
+    else:
+        df = pl.read_csv(io.BytesIO(body), separator='\t', has_header=False, infer_schema_length=0, quote_char=None,
+                         truncate_ragged_lines=True)       # IsoQuant rows carry a field more than its header names
+        ra = pl.DataFrame({c: df.to_series(names.index(c)) for c in NEEDED})
 
-    g = ra[ra['gene_id'] != '.'].drop_duplicates(['read_id', 'gene_id'])
-    genes = g[g['read_id'].map(g['read_id'].value_counts()) == 1].set_index('read_id')['gene_id']
-
-    out = pd.concat([once.rename('isoform'), genes.rename('gene')], axis=1).fillna('.')
-    out = out[(out['isoform'] != '.') | (out['gene'] != '.')]
-    out.to_csv(sys.stdout, sep='\t', header=False)
-    print(f"read_features.py: {ra['read_id'].nunique()} reads; isoform for {(out['isoform'] != '.').sum()}, "
+    # a read keeps its isoform only if it has exactly one unique-type row, and its gene only if
+    # all its rows name the same gene
+    once = ra.filter(pl.col('assignment_type').is_in(UNIQUE) & (pl.col('isoform_id') != '.')) \
+             .group_by('read_id').agg(pl.len().alias('n'), pl.col('isoform_id').first().alias('isoform')) \
+             .filter(pl.col('n') == 1).select('read_id', 'isoform')
+    genes = ra.filter(pl.col('gene_id') != '.').unique(subset=['read_id', 'gene_id']) \
+              .group_by('read_id').agg(pl.len().alias('n'), pl.col('gene_id').first().alias('gene')) \
+              .filter(pl.col('n') == 1).select('read_id', 'gene')
+    out = once.join(genes, on='read_id', how='full', coalesce=True) \
+              .with_columns(pl.col('isoform').fill_null('.'), pl.col('gene').fill_null('.')) \
+              .sort('read_id')
+    sys.stdout.write(out.write_csv(separator='\t', include_header=False, quote_style='never'))
+    print(f"read_features.py: {ra['read_id'].n_unique()} reads; isoform for {(out['isoform'] != '.').sum()}, "
           f"gene for {(out['gene'] != '.').sum()}", file=sys.stderr)
 
 

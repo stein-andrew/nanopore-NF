@@ -1,0 +1,14 @@
+# isomatch catalogue
+chr1	isomatch	gene	1	200	.	+	.	gene_id "G1";
+chr1	isomatch	transcript	1	200	.	+	.	gene_id "G1"; transcript_id "T1";
+chr1	isomatch	exon	1	200	.	+	.	gene_id "G1"; transcript_id "T1";
+chr1	isomatch	transcript	1	200	.	+	.	gene_id "G1"; transcript_id "T2";
+chr1	isomatch	exon	1	200	.	+	.	gene_id "G1"; transcript_id "T2";
+chr1	isomatch	gene	1	200	.	+	.	gene_id "G2";
+chr1	isomatch	transcript	1	200	.	+	.	gene_id "G2"; transcript_id "T3";
+chr1	isomatch	exon	1	200	.	+	.	gene_id "G2"; transcript_id "T3";
+chr1	isomatch	gene	1	200	.	+	.	gene_id "G3";
+chr1	isomatch	transcript	1	200	.	+	.	gene_id "G3"; transcript_id "T4";
+chr1	isomatch	exon	1	200	.	+	.	gene_id "G3"; transcript_id "T4";
+chr1	isomatch	transcript	1	200	.	+	.	gene_id "G3"; transcript_id "T5";
+chr1	isomatch	exon	1	200	.	+	.	gene_id "G3"; transcript_id "T5";

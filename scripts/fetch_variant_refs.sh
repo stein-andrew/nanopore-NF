@@ -13,12 +13,19 @@
 #   scripts/fetch_variant_refs.sh check                       # seconds: what each source keeps
 #   sbatch --array=0-25%8 scripts/fetch_variant_refs.sh fetch
 #   sbatch --dependency=afterok:<array job id> scripts/fetch_variant_refs.sh finish
+#   scripts/fetch_variant_refs.sh adopt                       # seconds: finish off old-style partials
 #
 # Array tasks: 0-23  gnomAD v4.1 joint (exomes + genomes), chr1-chr22, chrX, chrY
 #              24    gnomAD v3.1 chrM (v4.1 has no chrM; mito frequencies are v3.1's)
-#              25    ClinVar GRCh38, contigs renamed 1 -> chr1 ... MT -> chrM, all INFO kept
+#              25    ClinVar GRCh38, contigs renamed 1 -> chr1 ... MT -> chrM, all INFO kept. Its
+#                    header declares no contigs, which bcftools needs to write BCF (and to
+#                    rename), so the rename is done as text and the renamed contigs declared.
 # finish: concatenates the 24 nuclear files into one indexed BCF, checks that no records were
 # lost, removes the per-chromosome files and writes MANIFEST.tsv (sources, fields, counts).
+# adopt: the first version named its temporary output <out>.partial; htslib finds an index by
+# the data file's extension, so `bcftools index -n` on it failed after a complete stream.
+# adopt renames such files to <out minus .bcf>.partial.bcf, counts them and finalises them,
+# so nothing is fetched again. Temporary files are now named that way from the start.
 #
 # Kept INFO fields are matched on each file's own header (KEEP_RE), never guessed: a field
 # name that isn't there would make `bcftools annotate -x ^...` silently keep nothing. A
@@ -66,9 +73,19 @@ has_af() {              # kept-field list -> true if any AF-type field survived
     tr ',' '\n' <<< "$1" | grep -qE '^INFO/AF'
 }
 
-rename_map() {          # ClinVar contig names -> the reference's chr names
-    for c in {1..22} X Y; do printf '%s\tchr%s\n' "$c" "$c"; done
-    printf 'MT\tchrM\n'
+clinvar_to_chr() {      # ClinVar VCF text on stdin -> chr-named VCF text with ##contig lines
+    # Records on contigs other than 1-22, X, Y, MT are dropped and counted on stderr.
+    awk -F'\t' -v OFS='\t' '
+        BEGIN { for (i = 1; i <= 22; i++) m[i] = "chr" i; m["X"] = "chrX"; m["Y"] = "chrY"; m["MT"] = "chrM" }
+        /^##contig=/ { next }
+        /^##/        { print; next }
+        /^#CHROM/    { for (i = 1; i <= 22; i++) print "##contig=<ID=chr" i ">"
+                       print "##contig=<ID=chrX>"; print "##contig=<ID=chrY>"; print "##contig=<ID=chrM>"
+                       print; next }
+        ($1 in m)    { $1 = m[$1]; print; kept++; next }
+                     { dropped[$1]++ }
+        END          { printf "clinvar_to_chr: %d records kept\n", kept > "/dev/stderr"
+                       for (c in dropped) printf "clinvar_to_chr: dropped %d records on contig %s\n", dropped[c], c > "/dev/stderr" }'
 }
 
 cmd_check() {
@@ -85,7 +102,7 @@ cmd_check() {
             echo "   FILTER values: $(sed -n 's/^##FILTER=<ID=\([^,>]*\).*/\1/p' <<< "$hdr" | paste -sd' ' -)"
         else
             echo "   release: $(sed -n 's/^##fileDate=//p' <<< "$hdr")    contigs, first 5: $(sed -n 's/^##contig=<ID=\([^,>]*\).*/\1/p' <<< "$hdr" | head -5 | paste -sd' ' -)"
-            echo "   all INFO kept; contigs renamed: $(rename_map | head -2 | tr '\t\n' '> ') ... MT>chrM"
+            echo "   all INFO kept; contigs renamed as text: 1>chr1 ... X>chrX Y>chrY MT>chrM (header declares none)"
         fi
     done
     echo "== output: $OUT  (writable: $([[ -w $OUT || -w $(dirname "$OUT") ]] && echo yes || echo NO))"
@@ -95,7 +112,7 @@ cmd_fetch() {
     local i=${SLURM_ARRAY_TASK_ID:?run as an array task: sbatch --array=0-25%8 $0 fetch}
     [[ -s $SIF ]] || die "no image at $SIF"
     local url out part
-    url=$(source_url "$i"); out=$(out_path "$i"); part="$out.partial"
+    url=$(source_url "$i"); out=$(out_path "$i"); part="${out%.bcf}.partial.bcf"
     mkdir -p "$(dirname "$out")" "$OUT/.manifest"
     if [[ -s $out && -s $out.csi ]]; then echo "already done: $out"; return 0; fi
 
@@ -108,18 +125,41 @@ cmd_fetch() {
         curl -sfL --retry 5 --retry-delay 30 "$url" \
           | bcf annotate --threads 2 -x "^$keep" -Ob -o "$part" -
     else
-        local map; map=$(mktemp); rename_map > "$map"
-        curl -sfL --retry 5 --retry-delay 30 "$url" \
-          | bcf annotate --threads 2 --rename-chrs "$map" -Ob -o "$part" -
-        rm -f "$map"
+        curl -sfL --retry 5 --retry-delay 30 "$url" | gzip -dc | clinvar_to_chr \
+          | bcf view --threads 2 -Ob -o "$part" -
         keep='all'
     fi
     bcf index --threads 2 -f "$part"
-    local n; n=$(bcf index -n "$part")
+    finalise "$i" "$part" "$out" "$url" "$keep"
+}
+
+finalise() {            # task part out url kept-fields: count, move into place, manifest line
+    local i=$1 part=$2 out=$3 url=$4 keep=$5 n
+    n=$(bcf index -n "$part") || die "cannot count records in $part (index $part.csi)"
     (( n > 0 )) || die "$part has no records"
     mv "$part.csi" "$out.csi"; mv "$part" "$out"
+    mkdir -p "$OUT/.manifest"
     printf '%s\t%s\t%s\t%s\t%s\n' "$(basename "$out")" "$url" "$n" "$keep" "$(date -u +%FT%TZ)" > "$OUT/.manifest/$i.tsv"
-    echo "done: $n records"
+    write_manifest
+    echo "done: $(basename "$out"): $n records"
+}
+
+write_manifest() {      # every finished file's line, regenerated after each one
+    { printf 'file\tsource\trecords\tinfo_kept\tfinished\n'; cat "$OUT"/.manifest/*.tsv 2>/dev/null | sort -V; } > "$OUT/MANIFEST.tsv"
+}
+
+cmd_adopt() {
+    [[ -s $SIF ]] || die "no image at $SIF"
+    local i out old part url keep missing=()
+    for i in $(seq 0 24); do
+        out=$(out_path "$i"); old="$out.partial"; part="${out%.bcf}.partial.bcf"
+        if [[ -s $out && -s $out.csi ]]; then echo "already final: $(basename "$out")"; continue; fi
+        if [[ -s $old && -s $old.csi ]]; then mv "$old" "$part"; mv "$old.csi" "$part.csi"; fi
+        if [[ ! ( -s $part && -s $part.csi ) ]]; then missing+=("$i"); echo "NOT FETCHED: $(basename "$out") (task $i)"; continue; fi
+        url=$(source_url "$i"); keep=$(bcf view -h "$part" | keep_fields)
+        finalise "$i" "$part" "$out" "$url" "$keep"
+    done
+    (( ${#missing[@]} == 0 )) || echo "re-fetch: sbatch --array=$(IFS=,; echo "${missing[*]}") $0 fetch"
 }
 
 cmd_finish() {
@@ -130,7 +170,7 @@ cmd_finish() {
     (( ${#missing[@]} == 0 )) || die "not fetched yet: ${missing[*]}"
     for f in "${files[@]}"; do n=$(bcf index -n "$f"); total=$(( total + n )); done
 
-    local part="$OUT/$NUCLEAR_BCF.partial"
+    local part="$OUT/${NUCLEAR_BCF%.bcf}.partial.bcf"
     bcf concat --threads "${SLURM_CPUS_PER_TASK:-4}" -Ob -o "$part" "${files[@]}"
     bcf index --threads "${SLURM_CPUS_PER_TASK:-4}" -f "$part"
     n=$(bcf index -n "$part")
@@ -138,11 +178,9 @@ cmd_finish() {
     mv "$part.csi" "$OUT/$NUCLEAR_BCF.csi"; mv "$part" "$OUT/$NUCLEAR_BCF"
     rm -rf "${OUT:?}/$NUCLEAR_DIR"
 
-    {
-        printf 'file\tsource\trecords\tinfo_kept\tfetched\n'
-        cat "$OUT"/.manifest/*.tsv | sort -V
-        printf '%s\t%s\t%s\t%s\t%s\n' "$NUCLEAR_BCF" "concat of the 24 gnomAD v4.1 joint files" "$n" "as above" "$(date -u +%FT%TZ)"
-    } > "$OUT/MANIFEST.tsv"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$NUCLEAR_BCF" "concat of the 24 gnomAD v4.1 joint chromosome files above" \
+        "$n" "as above" "$(date -u +%FT%TZ)" > "$OUT/.manifest/nuclear.tsv"
+    write_manifest
     echo "done: $OUT/$NUCLEAR_BCF ($n records); see $OUT/MANIFEST.tsv"
 }
 
@@ -151,7 +189,8 @@ main() {
         check)  cmd_check ;;
         fetch)  cmd_fetch ;;
         finish) cmd_finish ;;
-        *)      die "usage: $0 {check|fetch|finish}  (see the header of this script)" ;;
+        adopt)  cmd_adopt ;;
+        *)      die "usage: $0 {check|fetch|finish|adopt}  (see the header of this script)" ;;
     esac
 }
 

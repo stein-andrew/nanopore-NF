@@ -3,7 +3,7 @@
 
     fp_correct.py -m S.cov20.bed -ref genome.fa -e errortable.tsv.gz \\
         -mt a,0.81 m,0.80 ... -o S.cov20_fpcorr.bed \\
-        [--valid_only | --filter_kmer --filter_mismatch] [-n MIN_COV] [--engine polars|pandas]
+        [--valid_only | --filter_kmer --filter_mismatch] [-n MIN_COV]
 
 Same as IVT_fp_correction.py (checked row for row by tests/compare_fpcorr.py):
   * column 19 = max(0, percent_modified - 100 * fp), fp from the error table for the site's
@@ -31,19 +31,21 @@ Why it is fast:
     read at offsets computed from the .fai (gIVT holds the whole genome as Python strings);
   * no per-site Python loop: 9mers are gathered for all sites at once, encoded as 18-bit
     integers and looked up in a dense (mod code x 4^9) array;
-  * only the six columns the correction needs are parsed, by polars (default; threads
-    from POLARS_MAX_THREADS) or pandas; each output line is its input line plus column 19.
+  * only the six columns the correction needs are parsed, by polars (threads from
+    POLARS_MAX_THREADS); each output line is its input line plus column 19.
 """
 import argparse
-import csv
 import gzip
+import io
 import os
 import sys
 import time
 from collections import defaultdict
 
 import numpy as np
-import pandas as pd
+import polars as pl
+
+from tabular import codes_of
 
 MOD_TO_BASE = {'17802': 'T', '19229': 'G', '19228': 'C', '19227': 'T',
                '69426': 'A', 'a': 'A', 'm': 'C', '17596': 'A'}          # gIVT's mapping
@@ -89,33 +91,37 @@ def load_table(path, thresholds):
     """mod code -> row, plus (n_mods, 4^9) false-positive rates and a presence mask.
 
     Presence is kept apart from the value so a NaN rate behaves as in gIVT
-    (max(0, pct - NaN) is 0 there), not as "not in table". round_trip parsing gives the
-    same doubles as gIVT's float(); a repeated (mod, 9mer) keeps the last row, as in gIVT."""
+    (max(0, pct - NaN) is 0 there), not as "not in table". polars parses floats correctly
+    rounded, the same doubles as gIVT's float(); a repeated (mod, 9mer) keeps the last row,
+    as in gIVT."""
     opener = gzip.open if path.endswith('.gz') else open
-    with opener(path, 'rt') as fh:
-        header = fh.readline()
-    mod_col = mod_to_col(thresholds, header)
-    # Only the columns some mod code will read: those mod_to_col chose, plus column 2,
-    # which every code without a threshold reads. round_trip parsing is exact but slow,
-    # so all 30 threshold columns would cost seconds for nothing.
-    used = sorted({2, *mod_col.values()})
-    tab = pd.read_csv(path, sep='\t', header=None, skiprows=1, usecols=[0, 1, *used], dtype={0: str, 1: str},
-                      keep_default_na=False, na_values=['nan', 'NaN'], float_precision='round_trip')
-    mers, mods = tab[0].to_numpy(dtype=object), tab[1].to_numpy(dtype=object)
-    lengths = tab[0].str.len().to_numpy()
-    raw = np.asarray(mers, dtype='S9').view(np.uint8).reshape(-1, 9)   # longer 9mers are caught by `lengths`
+    with opener(path, 'rb') as fh:
+        header, _, body = fh.read().partition(b'\n')
+    mod_col = mod_to_col(thresholds, header.decode())
+    tab = pl.read_csv(io.BytesIO(body), separator='\t', has_header=False, infer_schema_length=0, quote_char=None)
+    mers = tab.to_series(0)
+    lengths = mers.str.len_chars().to_numpy()
+    raw = np.asarray(mers.to_list(), dtype='S9').view(np.uint8).reshape(-1, 9)  # longer 9mers caught by `lengths`
     codes, acgt = encode_kmers(raw)
     bad = np.flatnonzero((lengths != 9) | ~acgt)
     if len(bad):
-        sys.exit(f"fp_correct.py: {path} row {bad[0] + 2}: 9mer {mers[bad[0]]!r} is not 9 uppercase A/C/G/T")
+        sys.exit(f"fp_correct.py: {path} row {bad[0] + 2}: 9mer {mers[int(bad[0])]!r} is not 9 uppercase A/C/G/T")
 
-    mod_codes, names = pd.factorize(mods)
+    mod_codes, names = codes_of(tab.to_series(1))
     index = {str(m): i for i, m in enumerate(names)}
-    rate = np.empty(len(tab))
+    rate = np.empty(tab.height)
+    parsed = {}
     for i, m in enumerate(names):
+        col = mod_col[str(m)]
+        if col not in parsed:
+            parsed[col] = tab.to_series(col).cast(pl.Float64).to_numpy()
         rows = mod_codes == i
-        rate[rows] = tab[mod_col[str(m)]].to_numpy(dtype=np.float64)[rows]
-    last = ~pd.DataFrame({'m': mod_codes, 'k': codes}).duplicated(keep='last').to_numpy()
+        rate[rows] = parsed[col][rows]
+    # last occurrence of each (mod, 9mer): first occurrence in the reversed order
+    combo = mod_codes * 4 ** 9 + codes
+    _, first_rev = np.unique(combo[::-1], return_index=True)
+    last = np.zeros(len(combo), dtype=bool)
+    last[len(combo) - 1 - first_rev] = True
 
     fps = np.zeros((len(names), 4 ** 9))
     present = np.zeros((len(names), 4 ** 9), dtype=bool)
@@ -138,7 +144,7 @@ def read_fai(fasta):
     return out
 
 
-def read_sites(path, engine):
+def read_sites(path):
     """Raw lines (written back unchanged) and the six columns the correction needs."""
     with open(path, 'rb') as fh:
         data = fh.read()
@@ -149,30 +155,20 @@ def read_sites(path, engine):
     del data
     if lines[-1] == '':
         lines.pop()
-    if engine == 'polars':
-        import polars as pl
-        # All 18 columns as text, taken by position: the names polars generates for a
-        # headerless file with a column selection differ between versions.
-        df = pl.read_csv(path, separator='\t', has_header=False, infer_schema_length=0, quote_char=None)
-        if df.width != NCOL:
-            sys.exit(f"fp_correct.py: {path} has {df.width} columns, expected {NCOL} (modkit bedMethyl)")
-        col = df.to_series
-        chrom_codes, chroms = pd.factorize(col(0).to_numpy())
-        mod_codes, mods = pd.factorize(col(3).to_numpy())
-        sites = dict(minus=(col(5) == '-').to_numpy(),
-                     start=col(1).cast(pl.Int64).to_numpy(),
-                     cov=col(9).cast(pl.Int64).to_numpy(),
-                     pct=col(10).cast(pl.Float64).to_numpy())
-    else:
-        df = pd.read_csv(path, sep='\t', header=None, usecols=[0, 1, 3, 5, 9, 10], quoting=csv.QUOTE_NONE,
-                         keep_default_na=False, na_filter=False, float_precision='round_trip',
-                         dtype={0: 'category', 1: np.int64, 3: 'category', 5: 'category', 9: np.int64, 10: np.float64})
-        chrom_codes, chroms = df[0].cat.codes.to_numpy(), list(df[0].cat.categories)
-        mod_codes, mods = df[3].cat.codes.to_numpy(), list(df[3].cat.categories)
-        sites = dict(minus=(df[5] == '-').to_numpy(), start=df[1].to_numpy(),
-                     cov=df[9].to_numpy(), pct=df[10].to_numpy())
-    sites.update(chrom_codes=np.asarray(chrom_codes, dtype=np.int64), chroms=[str(c) for c in chroms],
-                 mod_codes=np.asarray(mod_codes, dtype=np.int64), mods=[str(m) for m in mods])
+    # All 18 columns as text, taken by position: the names polars generates for a
+    # headerless file with a column selection differ between versions.
+    df = pl.read_csv(path, separator='\t', has_header=False, infer_schema_length=0, quote_char=None)
+    if df.width != NCOL:
+        sys.exit(f"fp_correct.py: {path} has {df.width} columns, expected {NCOL} (modkit bedMethyl)")
+    col = df.to_series
+    chrom_codes, chroms = codes_of(col(0))
+    mod_codes, mods = codes_of(col(3))
+    sites = dict(minus=(col(5) == '-').to_numpy(),
+                 start=col(1).cast(pl.Int64).to_numpy(),
+                 cov=col(9).cast(pl.Int64).to_numpy(),
+                 pct=col(10).cast(pl.Float64).to_numpy(),
+                 chrom_codes=chrom_codes, chroms=[str(c) for c in chroms],
+                 mod_codes=mod_codes, mods=[str(m) for m in mods])
     if len(sites['start']) != len(lines):
         sys.exit(f"fp_correct.py: {path}: parsed {len(sites['start'])} rows but the file has {len(lines)} lines")
     return lines, sites
@@ -255,7 +251,6 @@ def main():
     ap.add_argument('--valid_only', action='store_true', help='drop rows that cannot be corrected (= both --filter_*)')
     ap.add_argument('--filter_kmer', action='store_true', help='drop rows without a 9mer')
     ap.add_argument('--filter_mismatch', action='store_true', help="drop rows whose centre base isn't the mod's base")
-    ap.add_argument('--engine', choices=['polars', 'pandas'], default='polars', help='input parsing (default polars)')
     args = ap.parse_args()
 
     filter_kmer = args.filter_kmer or args.valid_only
@@ -264,12 +259,6 @@ def main():
     for pair in args.mod_threshold or []:
         mod, value = pair.split(',')
         thresholds[mod] = float(value)
-
-    if args.engine == 'polars':
-        try:
-            import polars  # noqa: F401
-        except ImportError:
-            sys.exit("fp_correct.py: polars is not installed here; use --engine pandas")
 
     t = time.time()
     index, fps, present = load_table(args.errortable, thresholds)
@@ -281,8 +270,8 @@ def main():
         return
 
     t = time.time()
-    lines, sites = read_sites(args.modkit, args.engine)
-    log(f"read {len(lines)} sites ({args.engine}) in {time.time() - t:.1f}s")
+    lines, sites = read_sites(args.modkit)
+    log(f"read {len(lines)} sites in {time.time() - t:.1f}s")
 
     t = time.time()
     adjusted, reason = correct(sites, args.reference, index, fps, present)
