@@ -15,7 +15,7 @@ process KNOWN_NOVEL {
     container "${params.container_dir}/${params.variants_image}"
 
     input:
-    tuple val(meta), path(vcf), path(fasta), path(fai)
+    tuple val(meta), path(vcf), path(fasta), path(fai), path(mask)
     tuple path(gnomad), path(gnomad_csi), path(mito), path(mito_csi), path(clinvar), path(clinvar_csi)
 
     output:
@@ -41,7 +41,10 @@ process KNOWN_NOVEL {
     else
         : > gnomad.tsv; : > mito.tsv; : > clinvar.tsv
     fi
-    bcftools query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER\\t%QUAL\\t[%GT\\t%GQ\\t%DP\\t%AF]\\n' calls.norm.bcf > calls.tsv
+    bcftools query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER\\t%QUAL\\t[%GT\\t%GQ\\t%DP\\t%AF]\\n' calls.norm.bcf > calls0.tsv
+    # IG / TR / HLA flag (bin/region_sets.sh): somatic antibody/TCR variation and HLA alignment
+    # artefacts are kept but counted apart from known / novel
+    mask_calls.sh ${mask} calls0.tsv > calls.tsv
 
     known_novel.py --calls calls.tsv --gnomad gnomad.tsv --mito mito.tsv --clinvar clinvar.tsv \\
         --mito-contig ${params.variants_mito_contig} --dp-split ${params.variants_dp_split} --prefix ${prefix}
@@ -49,7 +52,7 @@ process KNOWN_NOVEL {
     bgzip -c ${prefix}.annot.tsv > annot.tsv.gz
     tabix -f -s1 -b2 -e2 annot.tsv.gz
     bcftools annotate -a annot.tsv.gz -h ${prefix}.annot.hdr \\
-        -c CHROM,POS,REF,ALT,INFO/VARIANT_CLASS,INFO/gnomAD_AF,INFO/gnomAD_AF_exomes,INFO/gnomAD_AF_genomes,INFO/gnomAD_FILTER,INFO/CLNSIG,INFO/CLNREVSTAT \\
+        -c CHROM,POS,REF,ALT,INFO/VARIANT_CLASS,INFO/gnomAD_AF,INFO/gnomAD_AF_exomes,INFO/gnomAD_AF_genomes,INFO/gnomAD_FILTER,INFO/CLNSIG,INFO/CLNREVSTAT,INFO/MASKED \\
         -Oz -o ${prefix}.variants.vcf.gz calls.norm.bcf
     tabix -f -p vcf ${prefix}.variants.vcf.gz
     """

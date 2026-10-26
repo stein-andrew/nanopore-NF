@@ -20,7 +20,7 @@ process MOD_FEATURES {
 
     input:
     tuple val(meta), path(bam), path(bai), path(fpcorr), path(modkit_flags), path(givt_flags), path(assignments),
-          path(catalogue), path(classification), path(fasta), path(fai)
+          path(catalogue), path(classification), path(fasta), path(fai), path(globin_bed)
     path(error_table)
 
     output:
@@ -34,7 +34,10 @@ process MOD_FEATURES {
     set -o pipefail      # a modkit failure mid-stream must fail the task, not leave partial counts
 
     read_features.py ${assignments} > ${prefix}.read_features.tsv
-    feature_mods.py positions --candidates ${fpcorr} --candidate-pct ${cand} > ${prefix}.positions.bed
+    # Globin loci are left out: in whole blood their depth exceeds modkit_max_depth, so the
+    # pileup there is downsampled and can never agree with uncapped per-read counts.
+    bed_exclude.sh ${globin_bed} ${fpcorr} > ${prefix}.candidates.bed
+    feature_mods.py positions --candidates ${prefix}.candidates.bed --candidate-pct ${cand} > ${prefix}.positions.bed
 
     if [[ -s ${prefix}.positions.bed ]]; then
         modkit extract calls ${bam} - \\
@@ -52,7 +55,7 @@ process MOD_FEATURES {
 
     feature_mods.py levels \\
         --counts ${prefix}.counts.tsv \\
-        --candidates ${fpcorr} --candidate-pct ${cand} \\
+        --candidates ${prefix}.candidates.bed --candidate-pct ${cand} \\
         --catalogue ${catalogue} --classification ${classification} \\
         --reference ${fasta} --errortable ${error_table} --givt-flags ${givt_flags} \\
         --min-cov ${params.mods_min_coverage} --min-pct ${params.mods_min_percent} \\

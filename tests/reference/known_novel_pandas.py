@@ -58,6 +58,16 @@ ANNOT = [  # (INFO id, column, Number, Type, Description)
     ('CLNSIG', 'clinvar_sig', '.', 'String', 'ClinVar clinical significance of the matching record'),
     ('CLNREVSTAT', 'clinvar_revstat', '.', 'String', 'ClinVar review status of the matching record'),
 ]
+MASK_ANNOT = ('MASKED', 'masked', '1', 'String', 'IG, TR or HLA region (somatic or alignment-distorted variation), else .')
+
+
+def call_cols(path):
+    """The calls table may carry an 11th column, masked (IG / TR / HLA / .)."""
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        with open(path) as fh:
+            if fh.readline().count('\t') + 1 == len(CALL_COLS) + 1:
+                return CALL_COLS + ['masked']
+    return CALL_COLS
 
 
 def read(path, cols):
@@ -113,7 +123,8 @@ def main():
     ap.add_argument('--prefix', required=True)
     args = ap.parse_args()
 
-    calls = read(args.calls, CALL_COLS)
+    calls = read(args.calls, call_cols(args.calls))
+    has_mask = 'masked' in calls.columns
     gnomad, mito = read(args.gnomad, GNOMAD_COLS), read(args.mito, MITO_COLS)
     clinvar = read(args.clinvar, CLINVAR_COLS)
     c = classify(calls, gnomad, mito, args.mito_contig)
@@ -126,25 +137,30 @@ def main():
               file=sys.stderr)
 
     p = args.prefix
-    out_cols = CALL_COLS + ['class', 'gnomad_af', 'gnomad_af_exomes', 'gnomad_af_genomes', 'gnomad_nhomalt',
+    out_cols = CALL_COLS + (['masked'] if has_mask else []) + ['class', 'gnomad_af', 'gnomad_af_exomes', 'gnomad_af_genomes', 'gnomad_nhomalt',
                             'gnomad_af_het', 'gnomad_filter'] + CLINVAR_COLS[4:]
     c[out_cols].to_csv(f"{p}.variants.tsv.gz", sep='\t', index=False, compression='gzip')
 
     rows = []
+    base = c[c['masked'] == '.'] if has_mask else c        # summary rows count unmasked calls
     for cls in CLASSES + (['other'] if len(other) else []):
-        rows.append(dict(cls=cls, **substitution_stats(c[c['class'] == cls])))
-    novel = c[c['class'] == 'novel']
+        rows.append(dict(cls=cls, **substitution_stats(base[base['class'] == cls])))
+    novel = base[base['class'] == 'novel']
     dp = pd.to_numeric(novel['dp'], errors='coerce')
     rows.append(dict(cls=f"novel_dp>={args.dp_split}", **substitution_stats(novel[dp >= args.dp_split])))
     rows.append(dict(cls=f"novel_dp<{args.dp_split}", **substitution_stats(novel[~(dp >= args.dp_split)])))
+    if has_mask:
+        for cls in CLASSES:
+            rows.append(dict(cls=f"masked:{cls}", **substitution_stats(c[(c['masked'] != '.') & (c['class'] == cls)])))
     summary = pd.DataFrame(rows).rename(columns={'cls': 'class'})
     summary.to_csv(f"{p}.variants.summary.tsv", sep='\t', index=False)
 
-    annot = c[KEY + [col for _, col, _, _, _ in ANNOT]].copy()
+    annot_spec = ANNOT + ([MASK_ANNOT] if has_mask else [])
+    annot = c[KEY + [col for _, col, _, _, _ in annot_spec]].copy()
     annot = annot[annot['class'] != 'refcall']
     annot.to_csv(f"{p}.annot.tsv", sep='\t', index=False, header=False)
     with open(f"{p}.annot.hdr", 'w') as fh:
-        for info_id, _, number, typ, desc in ANNOT:
+        for info_id, _, number, typ, desc in annot_spec:
             fh.write(f'##INFO=<ID={info_id},Number={number},Type={typ},Description="{desc}">\n')
 
     counts = c['class'].value_counts()

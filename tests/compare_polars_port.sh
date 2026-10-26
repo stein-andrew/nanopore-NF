@@ -4,7 +4,7 @@
 # in the pipeline's work directory. Every output must be identical (read_features: as a set of
 # rows; its pandas version did not sort them).
 #
-#   bash tests/compare_polars_port.sh [WORK_DIR]
+#   bash tests/compare_polars_port.sh [WORK_DIR]          (RESULTS=<published results dir> for the matrices)
 #
 # Needs the mods and variants images, both with polars and pandas. One line per output, "same"
 # or "DIFFERENT" with the first differing lines; exits 1 if anything differs or fails.
@@ -16,6 +16,7 @@ CDIR=${CONTAINER_DIR:-/scratch/stein.an/ont-pipeline/containers}
 MODS=$CDIR/mods.sif
 VARIANTS=$CDIR/variants.sif
 DATA=$REPO/tests/data
+RESULTS=${RESULTS:-/scratch/stein.an/ont-pipeline/test-chr22/results}
 OUT=$(mktemp -d "${TMPDIR:-/tmp}/polars_port.XXXXXX")
 BINDS=/projects/Genometechlab,/scratch
 fail=0
@@ -99,6 +100,43 @@ done
 echo "== read_features (edge cases)"
 both rf "$MODS" read_features "$DATA/rf_read_assignments.tsv.gz"
 same read_features rf stdout.txt sorted
+
+echo "== known_novel (edge cases, with the IG/TR/HLA column)"
+both knm "$VARIANTS" known_novel --calls "$DATA/kn_calls_masked.tsv" --gnomad "$DATA/kn_gnomad.tsv" --mito "$DATA/kn_mito.tsv" \
+    --clinvar "$DATA/kn_clinvar.tsv" --prefix S
+for f in S.variants.tsv.gz S.variants.summary.tsv S.annot.tsv S.annot.hdr; do same "known_novel (masked)" knm "$f"; done
+
+echo "== cohort_matrices (edge cases)"
+both cmg "$MODS" cohort_matrices genes --counts "A=$DATA/cm_genes_A.tsv" --counts "B=$DATA/cm_genes_B.tsv" \
+    --catalogue "$DATA/catalogue.gtf" --classification "$DATA/classification.txt.gz" --prefix C
+for f in C.gene_counts.tsv.gz C.gene_cpm.tsv.gz; do same "cohort_matrices genes" cmg "$f"; done
+both cmm "$MODS" cohort_matrices mods --sites "$DATA/cm_sites.tsv" --long "$DATA/cm_long.tsv" --samples A B --min-pct 20 --prefix C
+for f in C.mods.n_valid.tsv.gz C.mods.n_mod.tsv.gz C.mods.pct_fpcorr.tsv.gz C.mods.summary.tsv; do same "cohort_matrices mods" cmm "$f"; done
+both cmp "$MODS" cohort_matrices polya --features "A=$DATA/cm_polya_A.tsv.gz" --features "B=$DATA/cm_polya_B.tsv.gz" --prefix C
+for f in C.polya.{isoform,gene}.{median_pt,n_tails}.tsv.gz; do same "cohort_matrices polya" cmp "$f"; done
+
+echo "== cohort_matrices on the published chr22 results ($RESULTS)"
+if [[ -d $RESULTS/isoforms/GRCh38/requant ]]; then
+    ids=(); gargs=(); fpairs=(); pargs=()
+    for d in "$RESULTS"/isoforms/GRCh38/requant/*/; do
+        s=$(basename "$d"); ids+=("$s")
+        gargs+=(--counts "$s=$d$s.gene_counts.tsv")
+        fpairs+=("$s=$RESULTS/mods/GRCh38/$s/$s.cov20_fpcorr.bed")
+        pargs+=(--features "$s=$RESULTS/polya/GRCh38/$s/$s.polya_features.tsv.gz")
+    done
+    C=$RESULTS/isoforms/GRCh38/cohort/cohort.GRCh38
+    both cmg_real "$MODS" cohort_matrices genes "${gargs[@]}" --catalogue "$C.catalogue.gtf" \
+        --classification "$C.classify.classification.txt.gz" --prefix C
+    for f in C.gene_counts.tsv.gz C.gene_cpm.tsv.gz; do same "cohort_matrices genes (real)" cmg_real "$f"; done
+    mkdir -p "$OUT/cm_real_in"
+    bash "$REPO/bin/mods_site_values.sh" 20 "$OUT/cm_real_in/sites.tsv" "$OUT/cm_real_in/long.tsv" "${fpairs[@]}"
+    echo "  (${#ids[@]} samples; $(wc -l < "$OUT/cm_real_in/sites.tsv") final sites in any sample)"
+    both cmm_real "$MODS" cohort_matrices mods --sites "$OUT/cm_real_in/sites.tsv" --long "$OUT/cm_real_in/long.tsv" \
+        --samples "${ids[@]}" --min-pct 20 --prefix C
+    for f in C.mods.n_valid.tsv.gz C.mods.n_mod.tsv.gz C.mods.pct_fpcorr.tsv.gz C.mods.summary.tsv; do same "cohort_matrices mods (real)" cmm_real "$f"; done
+    both cmp_real "$MODS" cohort_matrices polya "${pargs[@]}" --prefix C
+    for f in C.polya.{isoform,gene}.{median_pt,n_tails}.tsv.gz; do same "cohort_matrices polya (real)" cmp_real "$f"; done
+else echo "  skipped    no published results at $RESULTS"; fi
 
 echo "== real chr22 inputs from $WORK (ST1918)"
 d=$(find_dir ST1918.cov20.bed ST1918.givt_flags.txt || true)

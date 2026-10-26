@@ -17,8 +17,9 @@ process POLYA_FEATURES {
     tuple val(meta), path(bam), path(bai), path(assignments), path(catalogue), path(classification)
 
     output:
+    tuple val(meta), path("${prefix}.polya_features.tsv.gz"), emit: features
     tuple val(meta),
-          path("${prefix}.{isoform_polya.bed,gene_polya.bed,polya_features.tsv.gz,polya_reads.tsv.gz,polya_hist.tsv,polya_summary.tsv}")
+          path("${prefix}.{isoform_polya.bed,gene_polya.bed,polya_features.tsv.gz,polya_reads.tsv.gz,polya_hist.tsv,polya_summary.tsv}"), emit: out
 
     script:
     prefix = meta.id

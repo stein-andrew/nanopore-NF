@@ -61,3 +61,5 @@ outdir: /scratch/stein.an/ont-pipeline/results/CHANGE_ME_rna    # must be on /sc
 # clair3_rna_phasing: true                      # --enable_phasing_model
 # clair3_rna_args: ''                           # e.g. '--ctg_name ...,chrM' to also call chrM
 # variants_dp_split: 10                         # summary splits novel calls at DP >= this
+# globin_genes: ['HBA1', 'HBA2', 'HBB', 'HBD', 'HBG1', 'HBG2', 'HBM', 'HBQ1', 'HBZ', 'HBE1']
+# variant_mask_mhc: 'chr6:28510120-33480577'    # '' to mask IG and TR only

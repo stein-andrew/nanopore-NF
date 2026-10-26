@@ -35,6 +35,9 @@ include { MOD_FEATURES }                        from './modules/mods/features.nf
 include { POLYA_FEATURES }                      from './modules/polya/polya.nf'
 include { CLAIR3_RNA }                          from './modules/variants/clair3_rna.nf'
 include { KNOWN_NOVEL }                         from './modules/variants/known_novel.nf'
+include { REGION_SETS }                         from './modules/ref/region_sets.nf'
+include { READ_QC }                             from './modules/qc/read_qc.nf'
+include { COHORT_MATRICES }                     from './modules/cohort/matrices.nf'
 
 workflow {
     main:
@@ -53,6 +56,19 @@ workflow {
     // references: (ref, fasta, fai) and (ref, gtf)
     ch_ref = FAIDX(channel.fromList(refs.collect { ref -> tuple(ref, file(params.genomes[ref], checkIfExists: true)) }))
     ch_gtf = channel.fromList(refs.collect { ref -> tuple(ref, file(params.annotations[ref], checkIfExists: true)) })
+
+    // globin genes and the variant mask (IG / TR / HLA), from the annotation
+    REGION_SETS(ch_gtf)
+    ch_globin = REGION_SETS.out.regions.map { ref, globin, _mask -> tuple(ref, globin) }
+    ch_mask   = REGION_SETS.out.regions.map { ref, _globin, mask -> tuple(ref, mask) }
+
+    // per-sample read composition (globin / mito share), on the Stage 1 BAM
+    READ_QC(
+        channel.fromList(rows)
+            .map { meta, bam, bai -> tuple(meta.ref, meta, bam, bai) }
+            .combine(ch_globin, by: 0)
+            .map { _ref, meta, bam, bai, globin -> tuple(meta, bam, bai, globin) }
+    )
 
     FILTER_MAPQ(channel.fromList(rows))
     ch_keyed = FILTER_MAPQ.out.bam
@@ -125,8 +141,9 @@ workflow {
             .combine(COHORT_CATALOGUE.out.catalogue, by: 0)
             .combine(COHORT_CATALOGUE.out.classification, by: 0)
             .combine(ch_ref, by: 0)
-            .map { _ref, meta, bam, bai, fpcorr, mflags, gflags, assign, catalogue, classification, fasta, fai ->
-                tuple(meta, bam, bai, fpcorr, mflags, gflags, assign, catalogue, classification, fasta, fai) },
+            .combine(ch_globin, by: 0)
+            .map { _ref, meta, bam, bai, fpcorr, mflags, gflags, assign, catalogue, classification, fasta, fai, globin ->
+                tuple(meta, bam, bai, fpcorr, mflags, gflags, assign, catalogue, classification, fasta, fai, globin) },
         ch_errtab
     )
 
@@ -159,8 +176,25 @@ workflow {
             .filter { meta, _vcf -> meta.ref == params.variant_refs_genome }
             .map { meta, vcf -> tuple(meta.ref, meta, vcf) }
             .combine(ch_ref, by: 0)
-            .map { _ref, meta, vcf, fasta, fai -> tuple(meta, vcf, fasta, fai) },
+            .combine(ch_mask, by: 0)
+            .map { _ref, meta, vcf, fasta, fai, mask -> tuple(meta, vcf, fasta, fai, mask) },
         ch_varrefs
+    )
+
+    // ---- cohort matrices: one row per gene / site / feature, one column per sample
+    COHORT_MATRICES(
+        ISOQUANT_REQUANT.out.gene_counts
+            .join(MOD_STAGES.out.fpcorr)
+            .join(POLYA_FEATURES.out.features)
+            .join(READ_QC.out)
+            .map { meta, genes, fpcorr, polya, qc -> tuple(groupKey(meta.ref, nPerRef[meta.ref]), meta.id, genes, fpcorr, polya, qc) }
+            .groupTuple()
+            .map { key, ids, genes, fpcorrs, polyas, qcs ->
+                def s = [ids, genes, fpcorrs, polyas, qcs].transpose().sort { r -> r[0] }   // sample-id order
+                tuple(key.toString(), s.collect { r -> r[0] }, s.collect { r -> r[1] }, s.collect { r -> r[2] },
+                      s.collect { r -> r[3] }, s.collect { r -> r[4] }) }
+            .combine(COHORT_CATALOGUE.out.catalogue, by: 0)
+            .combine(COHORT_CATALOGUE.out.classification, by: 0)
     )
 
     publish:
@@ -174,9 +208,12 @@ workflow {
     mods_pileup = MODKIT_PILEUP.out.out
     mods_stages = MOD_STAGES.out.out
     mods_features = MOD_FEATURES.out
-    polya = POLYA_FEATURES.out
+    polya = POLYA_FEATURES.out.out
     variants = CLAIR3_RNA.out.out
     variant_classes = KNOWN_NOVEL.out
+    region_sets = REGION_SETS.out.out
+    read_qc = READ_QC.out
+    cohort_matrices = COHORT_MATRICES.out.out
 }
 
 output {
@@ -218,6 +255,15 @@ output {
     }
     variant_classes {
         path { meta, _files -> "variants/${meta.ref}/${meta.id}" }
+    }
+    region_sets {
+        path { ref_name, _files -> "qc/${ref_name}/regions" }
+    }
+    read_qc {
+        path { meta, _tsv -> "qc/${meta.ref}" }
+    }
+    cohort_matrices {
+        path { ref_name, _files -> "cohort/${ref_name}" }
     }
 }
 
@@ -277,6 +323,10 @@ def validateParams(refs) {
         if( !path || !file(path).isFile() || !file("${path}.csi").isFile() )
             error("RNA_analysis.nf: " + "${name} must be an indexed BCF (with ${name}.csi beside it); got '${path}'")
     }
+    if( !params.globin_genes )
+        error("RNA_analysis.nf: " + "globin_genes is empty (conf/rna.config): the read QC needs at least one gene name")
+    if( params.variant_mask_mhc && !(params.variant_mask_mhc ==~ /[^:]+:[0-9]+-[0-9]+/) )
+        error("RNA_analysis.nf: " + "variant_mask_mhc must be chrom:start-end or '', not '${params.variant_mask_mhc}'")
     refs.findAll { r -> r != params.variant_refs_genome }.each { r ->
         log.warn("RNA_analysis.nf: known/novel annotation needs ${params.variant_refs_genome} references; skipping ${r} samples")
     }

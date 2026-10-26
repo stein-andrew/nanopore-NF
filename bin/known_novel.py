@@ -35,6 +35,7 @@ Writes:
 """
 
 import argparse
+import os
 import sys
 
 import polars as pl
@@ -60,6 +61,16 @@ ANNOT = [  # (INFO id, column, Number, Type, Description)
     ('CLNSIG', 'clinvar_sig', '.', 'String', 'ClinVar clinical significance of the matching record'),
     ('CLNREVSTAT', 'clinvar_revstat', '.', 'String', 'ClinVar review status of the matching record'),
 ]
+MASK_ANNOT = ('MASKED', 'masked', '1', 'String', 'IG, TR or HLA region (somatic or alignment-distorted variation), else .')
+
+
+def call_cols(path):
+    """The calls table may carry an 11th column, masked (IG / TR / HLA / .)."""
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        with open(path) as fh:
+            if fh.readline().count('\t') + 1 == len(CALL_COLS) + 1:
+                return CALL_COLS + ['masked']
+    return CALL_COLS
 
 
 def read(path, cols):
@@ -113,7 +124,9 @@ def main():
     ap.add_argument('--prefix', required=True)
     args = ap.parse_args()
 
-    c = classify(read(args.calls, CALL_COLS), read(args.gnomad, GNOMAD_COLS), read(args.mito, MITO_COLS),
+    calls = read(args.calls, call_cols(args.calls))
+    has_mask = 'masked' in calls.columns
+    c = classify(calls, read(args.gnomad, GNOMAD_COLS), read(args.mito, MITO_COLS),
                  read(args.clinvar, CLINVAR_COLS), args.mito_contig)
     other = c.filter(pl.col('class') == 'other')
     if other.height:
@@ -121,24 +134,31 @@ def main():
               file=sys.stderr)
 
     p = args.prefix
-    write_tsv(c.select(OUT_COLS), f"{p}.variants.tsv.gz")
+    out_cols = OUT_COLS[:len(CALL_COLS)] + (['masked'] if has_mask else []) + OUT_COLS[len(CALL_COLS):]
+    write_tsv(c.select(out_cols), f"{p}.variants.tsv.gz")
 
-    rows = [dict(cls=cls, **substitution_stats(c.filter(pl.col('class') == cls)))
+    base = c.filter(pl.col('masked') == '.') if has_mask else c        # summary rows count unmasked calls
+    rows = [dict(cls=cls, **substitution_stats(base.filter(pl.col('class') == cls)))
             for cls in CLASSES + (['other'] if other.height else [])]
-    novel = c.filter(pl.col('class') == 'novel')
+    novel = base.filter(pl.col('class') == 'novel')
     deep = pl.col('dp').cast(pl.Float64, strict=False) >= args.dp_split
     rows.append(dict(cls=f"novel_dp>={args.dp_split}", **substitution_stats(novel.filter(deep.fill_null(False)))))
     rows.append(dict(cls=f"novel_dp<{args.dp_split}", **substitution_stats(novel.filter(~deep.fill_null(False)))))
+    if has_mask:
+        for cls in CLASSES:
+            rows.append(dict(cls=f"masked:{cls}", **substitution_stats(
+                c.filter((pl.col('masked') != '.') & (pl.col('class') == cls)))))
     with open(f"{p}.variants.summary.tsv", 'w') as out:
         names = ['class', 'calls', 'snv', 'indel', 'transitions', 'transversions', 'ti_tv', 'ag_tc_share', 'in_clinvar']
         out.write('\t'.join(names) + '\n')
         for r in rows:
             out.write('\t'.join(str(r['cls'] if n == 'class' else r[n]) for n in names) + '\n')
 
-    annot = c.filter(pl.col('class') != 'refcall').select(KEY + [col for _, col, _, _, _ in ANNOT])
+    annot_spec = ANNOT + ([MASK_ANNOT] if has_mask else [])
+    annot = c.filter(pl.col('class') != 'refcall').select(KEY + [col for _, col, _, _, _ in annot_spec])
     write_tsv(annot, f"{p}.annot.tsv", header=False)
     with open(f"{p}.annot.hdr", 'w') as fh:
-        for info_id, _, number, typ, desc in ANNOT:
+        for info_id, _, number, typ, desc in annot_spec:
             fh.write(f'##INFO=<ID={info_id},Number={number},Type={typ},Description="{desc}">\n')
 
     counts = dict(c.group_by('class').agg(pl.len()).iter_rows())
