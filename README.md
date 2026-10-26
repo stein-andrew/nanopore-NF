@@ -1,4 +1,4 @@
-# ont-pipeline
+# nanopore-NF
 
 ONT DNA (fiber-seq) and RNA (RNA004 direct RNA) processing, split so the GPU-heavy
 half can run on whichever cluster has the GPUs.
@@ -9,7 +9,7 @@ half can run on whichever cluster has the GPUs.
 | 2 | `analysis.nf` | Explorer | *not written yet*: DNA (Clair3, whatshap, fibertools, modkit) / RNA (modkit, gIVT, IsoQuant, StringTie2, isomatch, Clair3-RNA) |
 
 Stage 1 writes `analysis_samplesheet.csv` with paths relative to its outdir, so
-after an rsync it is Stage 2's `--input` unchanged.
+after an rsync, Stage 2's `--input` remains unchanged.
 
 ## Quick start
 
@@ -30,7 +30,8 @@ scripts/transfer.sh /scratch/$USER/ont-pipeline/results/run1 \
 Run Nextflow itself from a login node (Explorer) or a long, low-resource job; it
 submits every task to SLURM. Requires Nextflow ≥ 25.10 (workflow outputs).
 
-**On AICR the login node kills the JVM**, so the head job runs under SLURM:
+**On AICR the login node kills the JVM**, so the head job runs under SLURM but cannot 
+be run longer than 24 hours, so --resume will be needed if the job times out:
 
 ```bash
 scripts/aicr_launch.sh /scratch/$USER/ont-pipeline/runs/run1 \
