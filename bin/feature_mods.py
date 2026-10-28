@@ -125,6 +125,19 @@ def fp_corrected(rows, reference, errortable, givt_flags):
     return adjusted
 
 
+def in_regions_mask(path):
+    """Expression: is the row's (chrom, pos) inside any region of a small BED (half-open)."""
+    regs = []
+    with open(path) as fh:
+        for line in fh:
+            if line.strip() and not line.startswith('#'):
+                c = line.rstrip('\n').split('\t')
+                regs.append((c[0], int(c[1]), int(c[2])))
+    if not regs:
+        return pl.lit(False)
+    return pl.any_horizontal([(pl.col('chrom') == c) & (pl.col('pos') >= s) & (pl.col('pos') < e) for c, s, e in regs])
+
+
 def fmt(x):
     return '' if x is None or x != x else f"{x:.2f}"
 
@@ -164,11 +177,15 @@ def cmd_levels(args):
                      on=SITE + ['mod'], how='left')
     match = ((pl.col('n_valid') == pl.col('sample_n_valid')) & (pl.col('n_mod') == pl.col('sample_n_mod'))).fill_null(False)
     allr = allr.with_columns(match.alias('match'))
-    agree = int(allr['match'].sum()) if cand.height else 0
-    agreement = agree / cand.height if cand.height else 1.0
+    # sites in --agreement-exclude (depth-capped pileup loci) cannot match an uncapped count
+    exempt = in_regions_mask(args.agreement_exclude) if args.agreement_exclude else pl.lit(False)
+    checked = allr.filter(~exempt)
+    n_exempt = allr.height - checked.height
+    agree = int(checked['match'].sum()) if checked.height else 0
+    agreement = agree / checked.height if checked.height else 1.0
     if agreement < args.min_agreement:
-        bad = allr.filter(~pl.col('match')).head(5).select(SITE + ['mod', 'sample_n_valid', 'n_valid', 'sample_n_mod', 'n_mod'])
-        sys.exit(f"feature_mods.py: extract calls reproduce the pileup at only {agree} of {cand.height} candidate sites "
+        bad = checked.filter(~pl.col('match')).head(5).select(SITE + ['mod', 'sample_n_valid', 'n_valid', 'sample_n_mod', 'n_mod'])
+        sys.exit(f"feature_mods.py: extract calls reproduce the pileup at only {agree} of {checked.height} candidate sites "
                  f"({agreement:.1%} < {args.min_agreement:.0%}): they are not counting the same calls. First mismatches "
                  f"(pileup sample_n_valid/sample_n_mod vs extract n_valid/n_mod):\n"
                  + bad.write_csv(separator='\t', quote_style='never'))
@@ -209,7 +226,9 @@ def cmd_levels(args):
     with open(f"{p}.feature_mods.summary.tsv", 'w') as out:
         out.write("metric\tvalue\n")
         out.write(f"candidate_site_mod_rows\t{cand.height}\n")
-        out.write(f"pileup_agreement\t{agree}/{cand.height}\n")
+        out.write(f"pileup_agreement\t{agree}/{checked.height}\n")
+        if args.agreement_exclude:
+            out.write(f"pileup_agreement_exempt\t{n_exempt}\n")
         for level in ('isoform', 'gene'):
             sub = feat.filter(pl.col('level') == level)
             out.write(f"{level}_rows\t{sub.height}\n")
@@ -217,7 +236,8 @@ def cmd_levels(args):
             fin = sub.filter(pl.col('final')).group_by('mod').agg(pl.len().alias('n')).sort('mod')
             for mod, n in fin.iter_rows():
                 out.write(f"{level}_final:{mod}\t{n}\n")
-    print(f"feature_mods.py: pileup agreement {agree}/{cand.height}; final rows: isoform "
+    print(f"feature_mods.py: pileup agreement {agree}/{checked.height}"
+          + (f" ({n_exempt} site(s) exempt)" if args.agreement_exclude else "") + "; final rows: isoform "
           f"{feat.filter(is_iso & pl.col('final')).height}, gene {feat.filter((pl.col('level') == 'gene') & pl.col('final')).height}",
           file=sys.stderr)
 
@@ -238,6 +258,8 @@ def main():
             s.add_argument('--givt-flags', required=True, help='S.givt_flags.txt (the sample-level thresholds)')
             s.add_argument('--min-cov', type=int, required=True)
             s.add_argument('--min-pct', type=float, required=True)
+            s.add_argument('--agreement-exclude', default=None,
+                           help='BED of regions whose sites are left out of the pileup agreement check (kept in the levels)')
             s.add_argument('--min-agreement', type=float, default=0.95,
                            help='fraction of candidate sites where extract calls must reproduce the pileup (default 0.95)')
             s.add_argument('--prefix', required=True)

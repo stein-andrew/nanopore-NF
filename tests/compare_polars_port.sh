@@ -85,6 +85,12 @@ both fm "$MODS" feature_mods levels --counts "$DATA/fm_counts.tsv" --candidates 
     --catalogue "$DATA/catalogue.gtf" --classification "$DATA/classification.txt.gz" --reference "$DATA/ref2w.fa" \
     --errortable "$DATA/errtab2.tsv.gz" --givt-flags "$DATA/givt_flags.txt" --min-cov 20 --min-pct 20 --prefix S
 for f in S.isoform_mods.bed S.gene_mods.bed S.feature_mods.tsv.gz S.feature_mods.summary.tsv; do same feature_mods fm "$f"; done
+# one site's pooled count disagrees with the pileup; its region is exempt, so 100% must still pass
+both fmx "$MODS" feature_mods levels --counts "$DATA/fm_counts_mismatch.tsv" --candidates "$DATA/fm_candidates.bed" --candidate-pct 20 \
+    --catalogue "$DATA/catalogue.gtf" --classification "$DATA/classification.txt.gz" --reference "$DATA/ref2w.fa" \
+    --errortable "$DATA/errtab2.tsv.gz" --givt-flags "$DATA/givt_flags.txt" --min-cov 20 --min-pct 20 \
+    --min-agreement 1.0 --agreement-exclude "$DATA/fm_exempt.bed" --prefix S
+for f in S.isoform_mods.bed S.gene_mods.bed S.feature_mods.tsv.gz S.feature_mods.summary.tsv; do same "feature_mods (exempt)" fmx "$f"; done
 
 echo "== polya_features (edge cases, without and with caps)"
 both pa "$MODS" polya_features --reads "$DATA/pa_reads_pt.tsv" --features "$DATA/pa_read_features.tsv" \

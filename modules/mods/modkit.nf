@@ -1,6 +1,11 @@
 // RNA modifications: modkit pileup, then the filter stages and gIVT false-positive correction.
 //
-// MODKIT_PILEUP  modkit sample-probs estimates per-base call thresholds (what pileup would
+// MODKIT_PILEUP  pileup reads the BAM from SUBSAMPLE_LOCI (subsample.nf: loci deeper than the
+//                depth cap randomly subsampled, so the cap never chooses reads); sample-probs
+//                still samples the original BAM. bin/validated_pileup.sh writes the pileup to
+//                local disk and checks it (18 columns, line count = modkit's own row count),
+//                recording the count in raw.bed.rows; MOD_STAGES re-checks what it receives.
+//                modkit sample-probs estimates per-base call thresholds (what pileup would
 //                estimate itself); bin/mod_thresholds.py writes them as flags for BOTH modkit
 //                pileup and gIVT, because gIVT's false-positive rates are only right at the
 //                threshold the calls were made at. params.mod_filter_thresholds fixes them
@@ -23,13 +28,13 @@ process MODKIT_PILEUP {
     container "${params.container_dir}/${params.mods_image}"
 
     input:
-    tuple val(meta), path(bam), path(bai)
+    tuple val(meta), path(bam), path(bai), path(pileup_bam, stageAs: 'pileup/*'), path(pileup_bai, stageAs: 'pileup/*')
 
     output:
-    tuple val(meta), path("${prefix}.raw.bed"), path("${prefix}.givt_flags.txt"), emit: pileup
+    tuple val(meta), path("${prefix}.raw.bed"), path("${prefix}.raw.bed.rows"), path("${prefix}.givt_flags.txt"), emit: pileup
     tuple val(meta), path("${prefix}.modkit_flags.txt"), path("${prefix}.givt_flags.txt"), emit: flags
     tuple val(meta),
-          path("${prefix}.{raw.bed,thresholds.tsv,modkit_flags.txt,givt_flags.txt,sample_probs.txt,sample_probs.log,pileup.log}"),
+          path("${prefix}.{raw.bed,raw.bed.rows,thresholds.tsv,modkit_flags.txt,givt_flags.txt,sample_probs.txt,sample_probs.log,pileup.log}"),
           path("${prefix}.sample_probs/*", arity: '0..*'), emit: out
 
     script:
@@ -54,13 +59,8 @@ process MODKIT_PILEUP {
     mod_thresholds.py --sample-probs "\${table:-${prefix}.sample_probs.txt}" \\
         --percentile ${params.modkit_filter_percentile} --prefix ${prefix} ${fixed}
 
-    modkit pileup ${bam} ${prefix}.raw.bed \\
-        --threads ${task.cpus} \\
-        --max-depth ${params.modkit_max_depth} \\
-        \$(cat ${prefix}.modkit_flags.txt) \\
-        --log-filepath ${prefix}.pileup.log \\
-        --suppress-progress \\
-        ${params.modkit_pileup_args}
+    validated_pileup.sh ${pileup_bam} ${prefix}.raw.bed ${task.cpus} ${params.modkit_max_depth} \\
+        ${prefix}.modkit_flags.txt ${prefix}.pileup.log ${params.modkit_pileup_args}
     """
 
     // Stub test for pipeline integration
@@ -68,6 +68,7 @@ process MODKIT_PILEUP {
     prefix = meta.id
     """
     mkdir -p ${prefix}.sample_probs
+    echo 0 > ${prefix}.raw.bed.rows
     touch ${prefix}.raw.bed ${prefix}.thresholds.tsv ${prefix}.modkit_flags.txt ${prefix}.sample_probs.txt ${prefix}.sample_probs.log ${prefix}.pileup.log
     echo 'a,0.9' > ${prefix}.givt_flags.txt
     """
@@ -79,7 +80,7 @@ process MOD_STAGES {
     container "${params.container_dir}/${params.mods_image}"
 
     input:
-    tuple val(meta), path(raw), path(givt_flags), path(fasta), path(fai)
+    tuple val(meta), path(raw), path(raw_rows), path(givt_flags), path(fasta), path(fai)
     path(error_table)
 
     output:
@@ -94,6 +95,7 @@ process MOD_STAGES {
     min_pct = params.mods_min_percent
     def cov = "${prefix}.cov${min_cov}"
     """
+    check_rows.sh ${raw} ${raw_rows} 18      # the pileup arrived whole (bin/validated_pileup.sh)
     mod_stages.sh coverage ${raw} ${min_cov} ${min_pct} ${prefix}
 
     # An empty coverage stage just stays empty. The log holds fp_correct.py's per-step timings

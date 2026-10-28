@@ -31,6 +31,7 @@ include { STRINGTIE }                           from './modules/isoform/stringti
 include { ISOFORM_CONSENSUS }                   from './modules/isoform/consensus.nf'
 include { COHORT_CATALOGUE; COHORT_FILTER }     from './modules/isoform/cohort.nf'
 include { MODKIT_PILEUP; MOD_STAGES }           from './modules/mods/modkit.nf'
+include { SUBSAMPLE_LOCI }                      from './modules/mods/subsample.nf'
 include { MOD_FEATURES }                        from './modules/mods/features.nf'
 include { POLYA_FEATURES }                      from './modules/polya/polya.nf'
 include { CLAIR3_RNA }                          from './modules/variants/clair3_rna.nf'
@@ -122,12 +123,14 @@ workflow {
     // ---- modifications, on the Stage 1 BAM: every primary alignment, not the MAPQ >= 40
     // subset that isoform curation uses
     ch_errtab = channel.value(file(params.givt_error_table, checkIfExists: true))
-    MODKIT_PILEUP(channel.fromList(rows))
+    // loci deeper than the depth cap randomly subsampled first, so the cap never chooses reads
+    SUBSAMPLE_LOCI(channel.fromList(rows))
+    MODKIT_PILEUP(channel.fromList(rows).join(SUBSAMPLE_LOCI.out.bam))   // (meta, bam, bai, pileup bam, bai)
     MOD_STAGES(
         MODKIT_PILEUP.out.pileup
-            .map { meta, bed, flags -> tuple(meta.ref, meta, bed, flags) }
+            .map { meta, bed, nrows, flags -> tuple(meta.ref, meta, bed, nrows, flags) }
             .combine(ch_ref, by: 0)
-            .map { _ref, meta, bed, flags, fasta, fai -> tuple(meta, bed, flags, fasta, fai) },
+            .map { _ref, meta, bed, nrows, flags, fasta, fai -> tuple(meta, bed, nrows, flags, fasta, fai) },
         ch_errtab
     )
 
@@ -137,13 +140,13 @@ workflow {
             .join(MOD_STAGES.out.fpcorr)
             .join(MODKIT_PILEUP.out.flags)
             .join(ISOQUANT_REQUANT.out.assignments)                 // (meta, bam, bai, fpcorr, modkit_flags, givt_flags, assignments)
-            .map { meta, bam, bai, fpcorr, mflags, gflags, assign -> tuple(meta.ref, meta, bam, bai, fpcorr, mflags, gflags, assign) }
+            .join(SUBSAMPLE_LOCI.out.loci)                          // the subsampled loci: exempt from the pileup check
+            .map { meta, bam, bai, fpcorr, mflags, gflags, assign, loci -> tuple(meta.ref, meta, bam, bai, fpcorr, mflags, gflags, assign, loci) }
             .combine(COHORT_CATALOGUE.out.catalogue, by: 0)
             .combine(COHORT_CATALOGUE.out.classification, by: 0)
             .combine(ch_ref, by: 0)
-            .combine(ch_globin, by: 0)
-            .map { _ref, meta, bam, bai, fpcorr, mflags, gflags, assign, catalogue, classification, fasta, fai, globin ->
-                tuple(meta, bam, bai, fpcorr, mflags, gflags, assign, catalogue, classification, fasta, fai, globin) },
+            .map { _ref, meta, bam, bai, fpcorr, mflags, gflags, assign, loci, catalogue, classification, fasta, fai ->
+                tuple(meta, bam, bai, fpcorr, mflags, gflags, assign, catalogue, classification, fasta, fai, loci) },
         ch_errtab
     )
 
@@ -206,6 +209,7 @@ workflow {
     requant   = ISOQUANT_REQUANT.out.out
     high_conf = COHORT_FILTER.out
     mods_pileup = MODKIT_PILEUP.out.out
+    mods_subsample = SUBSAMPLE_LOCI.out.out
     mods_stages = MOD_STAGES.out.out
     mods_features = MOD_FEATURES.out
     polya = POLYA_FEATURES.out.out
@@ -255,6 +259,9 @@ output {
     }
     variant_classes {
         path { meta, _files -> "variants/${meta.ref}/${meta.id}" }
+    }
+    mods_subsample {
+        path { meta, _files -> "mods/${meta.ref}/${meta.id}" }
     }
     region_sets {
         path { ref_name, _files -> "qc/${ref_name}/regions" }
@@ -323,6 +330,12 @@ def validateParams(refs) {
         if( !path || !file(path).isFile() || !file("${path}.csi").isFile() )
             error("RNA_analysis.nf: " + "${name} must be an indexed BCF (with ${name}.csi beside it); got '${path}'")
     }
+    ['subsample_window', 'subsample_merge'].each { name ->
+        if( !(params[name] instanceof Integer) || params[name] < 1 )
+            error("RNA_analysis.nf: " + "${name} must be a whole number of bp >= 1, not '${params[name]}'")
+    }
+    if( !(params.subsample_seed instanceof Integer) || params.subsample_seed < 0 )
+        error("RNA_analysis.nf: " + "subsample_seed must be a whole number >= 0, not '${params.subsample_seed}'")
     if( !params.globin_genes )
         error("RNA_analysis.nf: " + "globin_genes is empty (conf/rna.config): the read QC needs at least one gene name")
     if( params.variant_mask_mhc && !(params.variant_mask_mhc ==~ /[^:]+:[0-9]+-[0-9]+/) )

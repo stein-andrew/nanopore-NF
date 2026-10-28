@@ -134,6 +134,17 @@ def fp_corrected(rows, reference, errortable, givt_flags):
     return adjusted
 
 
+def in_regions_mask(df, path):
+    """Is each row's (chrom, pos) inside any region of a small BED (half-open)."""
+    mask = np.zeros(len(df), dtype=bool)
+    with open(path) as fh:
+        for line in fh:
+            if line.strip() and not line.startswith('#'):
+                c = line.rstrip('\n').split('\t')
+                mask |= ((df['chrom'] == c[0]) & (df['pos'] >= int(c[1])) & (df['pos'] < int(c[2]))).to_numpy()
+    return mask
+
+
 def fmt(x):
     return '' if x != x else f"{x:.2f}"
 
@@ -170,11 +181,14 @@ def cmd_levels(args):
 
     # every read together must give the pileup's own numbers at the candidate sites
     allr = cand.merge(rows[rows['level'] == 'all'][SITE + ['mod', 'n_valid', 'n_mod']], on=SITE + ['mod'], how='left')
-    agree = ((allr['n_valid'] == allr['sample_n_valid']) & (allr['n_mod'] == allr['sample_n_mod'])).sum()
-    agreement = agree / len(cand) if len(cand) else 1.0
+    match = ((allr['n_valid'] == allr['sample_n_valid']) & (allr['n_mod'] == allr['sample_n_mod'])).to_numpy()
+    exempt = in_regions_mask(allr, args.agreement_exclude) if args.agreement_exclude else np.zeros(len(allr), dtype=bool)
+    n_checked, n_exempt = int((~exempt).sum()), int(exempt.sum())
+    agree = int((match & ~exempt).sum())
+    agreement = agree / n_checked if n_checked else 1.0
     if agreement < args.min_agreement:
-        bad = allr[~((allr['n_valid'] == allr['sample_n_valid']) & (allr['n_mod'] == allr['sample_n_mod']))].head(5)
-        sys.exit(f"feature_mods.py: extract calls reproduce the pileup at only {agree} of {len(cand)} candidate sites "
+        bad = allr[~match & ~exempt].head(5)
+        sys.exit(f"feature_mods.py: extract calls reproduce the pileup at only {agree} of {n_checked} candidate sites "
                  f"({agreement:.1%} < {args.min_agreement:.0%}): they are not counting the same calls. First mismatches "
                  f"(pileup sample_n_valid/sample_n_mod vs extract n_valid/n_mod):\n"
                  + bad[SITE + ['mod', 'sample_n_valid', 'n_valid', 'sample_n_mod', 'n_mod']].to_string(index=False))
@@ -204,14 +218,17 @@ def cmd_levels(args):
     with open(f"{p}.feature_mods.summary.tsv", 'w') as out:
         out.write("metric\tvalue\n")
         out.write(f"candidate_site_mod_rows\t{len(cand)}\n")
-        out.write(f"pileup_agreement\t{agree}/{len(cand)}\n")
+        out.write(f"pileup_agreement\t{agree}/{n_checked}\n")
+        if args.agreement_exclude:
+            out.write(f"pileup_agreement_exempt\t{n_exempt}\n")
         for level in ('isoform', 'gene'):
             sub = feat[feat['level'] == level]
             out.write(f"{level}_rows\t{len(sub)}\n")
             out.write(f"{level}_features\t{sub['feature'].nunique()}\n")
             for mod, n in sub[sub['final']].groupby('mod').size().items():
                 out.write(f"{level}_final:{mod}\t{n}\n")
-    print(f"feature_mods.py: pileup agreement {agree}/{len(cand)}; final rows: isoform "
+    print(f"feature_mods.py: pileup agreement {agree}/{n_checked}"
+          + (f" ({n_exempt} site(s) exempt)" if args.agreement_exclude else "") + "; final rows: isoform "
           f"{int(((feat['level'] == 'isoform') & feat['final']).sum())}, gene {int(((feat['level'] == 'gene') & feat['final']).sum())}",
           file=sys.stderr)
 
@@ -232,6 +249,8 @@ def main():
             s.add_argument('--givt-flags', required=True, help='S.givt_flags.txt (the sample-level thresholds)')
             s.add_argument('--min-cov', type=int, required=True)
             s.add_argument('--min-pct', type=float, required=True)
+            s.add_argument('--agreement-exclude', default=None,
+                           help='BED of regions whose sites are left out of the pileup agreement check (kept in the levels)')
             s.add_argument('--min-agreement', type=float, default=0.95,
                            help='fraction of candidate sites where extract calls must reproduce the pileup (default 0.95)')
             s.add_argument('--prefix', required=True)

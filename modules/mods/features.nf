@@ -20,7 +20,7 @@ process MOD_FEATURES {
 
     input:
     tuple val(meta), path(bam), path(bai), path(fpcorr), path(modkit_flags), path(givt_flags), path(assignments),
-          path(catalogue), path(classification), path(fasta), path(fai), path(globin_bed)
+          path(catalogue), path(classification), path(fasta), path(fai), path(exempt_bed)
     path(error_table)
 
     output:
@@ -34,13 +34,15 @@ process MOD_FEATURES {
     set -o pipefail      # a modkit failure mid-stream must fail the task, not leave partial counts
 
     read_features.py ${assignments} > ${prefix}.read_features.tsv
-    # Globin loci are left out: in whole blood their depth exceeds modkit_max_depth, so the
-    # pileup there is downsampled and can never agree with uncapped per-read counts.
-    bed_exclude.sh ${globin_bed} ${fpcorr} > ${prefix}.candidates.bed
-    feature_mods.py positions --candidates ${prefix}.candidates.bed --candidate-pct ${cand} > ${prefix}.positions.bed
+    feature_mods.py positions --candidates ${fpcorr} --candidate-pct ${cand} > ${prefix}.positions.bed
 
+    # modkit reads the BAM as a stream, not through its index. Indexed, it loads every read of
+    # a chunk at once, and one chunk at a whole-blood globin locus took 245 GB (ST1918,
+    # 2026-10-26); streamed, --queue-size bounds what is in memory (5.6 GB on 10% of HBB).
+    # Every read is used, globin included.
     if [[ -s ${prefix}.positions.bed ]]; then
-        modkit extract calls ${bam} - \\
+        samtools view -u -@ 2 ${bam} \\
+          | modkit extract calls - - \\
             --include-bed ${prefix}.positions.bed \\
             --mapped-only \\
             \$(cat ${modkit_flags}) \\
@@ -55,11 +57,12 @@ process MOD_FEATURES {
 
     feature_mods.py levels \\
         --counts ${prefix}.counts.tsv \\
-        --candidates ${prefix}.candidates.bed --candidate-pct ${cand} \\
+        --candidates ${fpcorr} --candidate-pct ${cand} \\
         --catalogue ${catalogue} --classification ${classification} \\
         --reference ${fasta} --errortable ${error_table} --givt-flags ${givt_flags} \\
         --min-cov ${params.mods_min_coverage} --min-pct ${params.mods_min_percent} \\
         --min-agreement ${params.feature_mods_min_agreement} \\
+        --agreement-exclude ${exempt_bed} \\
         --prefix ${prefix}
     """
 

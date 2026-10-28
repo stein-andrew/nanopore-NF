@@ -38,4 +38,9 @@ missing=$(tr ',' '\n' <<< "$genes" | grep -vxF -f <(cut -f4 "$prefix.globin.bed"
     echo "globin genes not in the annotation: ${missing:-none}"
     echo "mask regions: $(cut -f4 "$prefix.mask.bed" | sort | uniq -c | awk '{printf "%s %s  ", $2, $1}')"
 } > "$prefix.region_sets.log"
-[[ -s $prefix.globin.bed ]] || { echo "region_sets.sh: none of the globin genes ($genes) are in $gtf" >&2; exit 1; }
+# No globin gene in the annotation (a single-chromosome test annotation, another species) is
+# not an error: the read QC then reports 0 globin reads, and the log says why.
+if [[ ! -s $prefix.globin.bed ]]; then
+    echo "WARNING: none of the globin genes ($genes) are in $gtf: the read QC will report 0 globin reads" \
+        | tee -a "$prefix.region_sets.log" >&2
+fi
