@@ -24,6 +24,7 @@
 # SAMPLE_REGEX (sample from the file name when @RG SM is missing, default ST[0-9]+).
 set -euo pipefail
 die() { echo "find_bams.sh: $*" >&2; exit 1; }
+trap 'echo "find_bams.sh: stopped at line $LINENO (exit $?)" >&2' ERR
 (( $# >= 2 )) || die "usage: $0 <out prefix> <folder> [folder...]"
 prefix=$1; shift
 ST=${SAMTOOLS:-samtools}
@@ -61,17 +62,31 @@ while IFS= read -r p; do
     if [[ -z $idx ]]; then noindex=$((noindex + 1)); continue; fi
     # shellcheck disable=SC2086
     h=$($ST view -H "$p" 2> /dev/null) || h=""
-    field() { grep "^@RG" <<< "$h" | grep -o "$1[^[:space:]]*" | cut -d"$2" -f2- | sort -u | paste -sd'|' -; }
-    sm=$(field 'SM:' ':'); model=$(field 'basecall_model=' '='); mods=$(field 'modbase_models=' '=')
-    dorado=$(grep '^@PG' <<< "$h" | grep -E 'ID:basecaller|PN:dorado' | grep -o 'VN:[^[:space:]]*' | cut -d: -f2 | sort -u | paste -sd'|' -)
-    fp=$(grep '^@SQ' <<< "$h" | grep -o 'SN:[^[:space:]]*\|LN:[^[:space:]]*' | paste -d' ' - - | md5sum | cut -c1-10)
-    nsq=$(grep -c '^@SQ' <<< "$h" || true)
+    # every field parsed by one awk, so a header without one (no @RG DS, no dorado @PG, ...)
+    # gives "." for it instead of a failed grep ending the script
+    IFS=$'\t' read -r sm model mods dorado nsq < <(printf '%s\n' "$h" | awk -F'\t' '
+        function join(a,    k, out) { out = ""; for (k in a) out = out (out == "" ? "" : "|") k; return out == "" ? "." : out }
+        /^@RG/ { for (i = 2; i <= NF; i++) {
+                     if ($i ~ /^SM:/) sm[substr($i, 4)] = 1
+                     if ($i ~ /^DS:/) { n = split(substr($i, 4), d, " ")
+                         for (j = 1; j <= n; j++) {
+                             if (d[j] ~ /^basecall_model=/) bm[substr(d[j], 16)] = 1
+                             if (d[j] ~ /^modbase_models=/) mm[substr(d[j], 16)] = 1 } } } }
+        /^@PG/ && /ID:basecaller|PN:dorado/ { for (i = 2; i <= NF; i++) if ($i ~ /^VN:/) dv[substr($i, 4)] = 1 }
+        /^@SQ/ { nsq++ }
+        END { printf "%s\t%s\t%s\t%s\t%d\n", join(sm), join(bm), join(mm), join(dv), nsq }')
+    fp=$(printf '%s\n' "$h" | awk -F'\t' '/^@SQ/ { s = ""; for (i = 2; i <= NF; i++) if ($i ~ /^(SN|LN):/) s = s $i " "; print s }' | md5sum | cut -c1-10)
     # shellcheck disable=SC2086
-    mapped=$($ST idxstats "$p" 2> /dev/null | awk '{ s += $3 } END { print s + 0 }')
+    mapped=$({ $ST idxstats "$p" 2> /dev/null || true; } | awk '{ s += $3 } END { print (NR ? s + 0 : ".") }')
+    [[ $sm == . ]] && sm=""; [[ $model == . ]] && model=""; [[ $mods == . ]] && mods=""; [[ $dorado == . ]] && dorado=""
     if [[ -z $sm || $sm == *'|'* ]]; then
         sm=$(basename "$p" | grep -oE "$RX" | head -n 1 || true); sm=${sm:-$(basename "$p" .bam)}
     fi
+    # RNA or DNA from the basecall model; failing that, from the file name (RNA004..., ..._dna_...)
     case ${model,,} in rna*) type=RNA ;; dna*) type=DNA ;; *) type=. ;; esac
+    if [[ $type == . ]]; then
+        case $(basename "${p,,}") in *rna*) type=RNA ;; *dna*) type=DNA ;; esac
+    fi
     printf '%s\t%s\t%.1f\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$p" "$idx" "$(stat -c %s "$p" | awk '{ print $1 / 1e9 }')" \
         "$(stat -c %y "$p" | cut -d. -f1)" "$sm" "$type" "${model:-.}" "${mods:-.}" "${dorado:-.}" "$fp" "$nsq" "$mapped" >> "$prefix.inventory.tsv"
 done < "$tmp/unique"
@@ -92,6 +107,11 @@ for col in 10:reference 7:basecall_model 9:dorado; do
     if (( k > 1 )); then echo "   CHECK: $k different ${name}s among the RNA BAMs:"; awk -F'\t' -v c="$n" 'NR > 1 && $6 == "RNA" { print "      " $c }' "$inv" | sort | uniq -c
     else echo "   one $name among the RNA BAMs: $(awk -F'\t' -v c="$n" 'NR > 1 && $6 == "RNA" { print $c; exit }' "$inv")"; fi
 done
+unknown=$(awk -F'\t' 'NR > 1 && $6 == "." { n++ } END { print n + 0 }' "$inv")
+if (( unknown > 0 )); then
+    echo "   CHECK: $unknown BAMs are neither RNA nor DNA by header or file name, so not in the samplesheet:"
+    awk -F'\t' 'NR > 1 && $6 == "." { print "      " $1 }' "$inv" | head -n 10
+fi
 dups=$(awk -F'\t' 'NR > 1 && $6 == "RNA" { print $5 }' "$inv" | sort | uniq -d)
 if [[ -n $dups ]]; then echo "   CHECK: samples with more than one RNA BAM (keep one each in the samplesheet): $(paste -sd' ' <<< "$dups")"
 else echo "   every RNA sample has one BAM"; fi
