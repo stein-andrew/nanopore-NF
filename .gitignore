@@ -32,3 +32,6 @@ __pycache__/
 .DS_Store
 stub-out/
 slurm-*.out
+
+# test inputs: small, and needed by tests/compare_polars_port.sh on every clone
+!tests/data/*
