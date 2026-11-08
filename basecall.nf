@@ -30,6 +30,12 @@ workflow {
     def align_to   = asList(params.align_to)
     def mod_models = asList(params.mod_models)
     validateParams(align_to, mod_models)
+    if (params.models_dir) {                    // fail now, not after hours in the GPU queue
+        def need = [params.dorado_model] + mod_models.collect { mm ->
+            file("${params.models_dir}/${mm}").isDirectory() ? mm : "${params.dorado_model}_${mm}" }
+        def missing = need.findAll { !file("${params.models_dir}/${it}").isDirectory() }
+        if (missing) error "basecall.nf: not in models_dir ${params.models_dir}: ${missing.join(', ')}"
+    }
     def rows = parseSamplesheet(file(params.input, checkIfExists: true))
     def n_ubam = rows.count { r -> r[0].source == 'ubam' }
     log.info "basecall.nf: ${params.data_type}, ${rows.size()} run(s) (${rows.size() - n_ubam} to basecall, ${n_ubam} from a uBAM), aligner=${params.aligner}, " +

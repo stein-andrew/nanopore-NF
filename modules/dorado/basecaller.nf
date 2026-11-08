@@ -11,11 +11,14 @@ process DORADO_BASECALLER {
     tuple val(meta), path("${meta.run_id}.ubam.bam"), env('DORADO_VERSION'), emit: ubam
 
     script:
-    // Models are baked into the image under /opt/models; full paths, not names, so
+    // Models from params.models_dir (downloaded or custom), else the image's /opt/models;
+    // full paths, not names, so
     // dorado never tries to download at run time.
-    def models = '/opt/models'
+    def models  = params.models_dir ?: '/opt/models'
+    def modPath = { mm -> params.models_dir && file("${models}/${mm}").isDirectory()
+                        ? "${models}/${mm}" : "${models}/${params.dorado_model}_${mm}" }
     def mods   = mod_models
-        ? '--modified-bases-models ' + mod_models.collect { m -> "${models}/${params.dorado_model}_${m}" }.join(',')
+        ? '--modified-bases-models ' + mod_models.collect(modPath).join(',')
         : ''
     """
     DORADO_VERSION=\$(dorado --version 2>&1 | tail -n1)
