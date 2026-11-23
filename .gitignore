@@ -35,3 +35,6 @@ slurm-*.out
 
 # test inputs: small, and needed by tests/compare_polars_port.sh on every clone
 !tests/data/*
+__pycache__/
+*.pyc
+slurm-*.out
