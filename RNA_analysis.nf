@@ -120,12 +120,14 @@ workflow {
             .combine(COHORT_CATALOGUE.out.classification, by: 0)    // (ref, ids, counts, catalogue, classification)
     )
 
-    // ---- modifications, on the Stage 1 BAM: every primary alignment, not the MAPQ >= 40
-    // subset that isoform curation uses
+    // ---- modifications. params.mods_unique_only (default): on the MAPQ >= isoform_min_mapq BAM, so that
+    // reads which map equally well to several places (rRNA, snRNA, paralogs, pseudogenes) cannot pile up
+    // at look-alike loci as constitutive "sites". false: every primary alignment of the Stage 1 BAM (v1).
+    ch_mod_bam = params.mods_unique_only ? FILTER_MAPQ.out.bam : channel.fromList(rows)
     ch_errtab = channel.value(file(params.givt_error_table, checkIfExists: true))
     // loci deeper than the depth cap randomly subsampled first, so the cap never chooses reads
-    SUBSAMPLE_LOCI(channel.fromList(rows))
-    MODKIT_PILEUP(channel.fromList(rows).join(SUBSAMPLE_LOCI.out.bam))   // (meta, bam, bai, pileup bam, bai)
+    SUBSAMPLE_LOCI(ch_mod_bam)
+    MODKIT_PILEUP(ch_mod_bam.join(SUBSAMPLE_LOCI.out.bam))   // (meta, bam, bai, pileup bam, bai)
     MOD_STAGES(
         MODKIT_PILEUP.out.pileup
             .map { meta, bed, nrows, flags -> tuple(meta.ref, meta, bed, nrows, flags) }
@@ -136,7 +138,7 @@ workflow {
 
     // ---- modification levels per isoform and per gene, at the final-stage sites
     MOD_FEATURES(
-        channel.fromList(rows)                                      // (meta, Stage 1 bam, bai)
+        ch_mod_bam                                                  // (meta, bam, bai): the pileup's reads
             .join(MOD_STAGES.out.fpcorr)
             .join(MODKIT_PILEUP.out.flags)
             .join(ISOQUANT_REQUANT.out.assignments)                 // (meta, bam, bai, fpcorr, modkit_flags, givt_flags, assignments)
