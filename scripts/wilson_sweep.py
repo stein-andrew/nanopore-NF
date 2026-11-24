@@ -27,8 +27,11 @@ Every rule sees positions with >= 20 valid reads (masked loci and alt/decoy cont
                      Valid only for the model the table was built from (the GM12878 table: v5.2, Dorado 1.0.0).
 --background can be given more than once. background_summary.tsv: per run and background, median background at DRACH
 and other sites (5-mer on the RNA strand; DRACH is m6A's motif, the split is reported for every modification).
-For each rule and run: calls, precision, recall against the modification's main truth set (precision is a
-lower bound: the maps are incomplete); recall split by the truth set's own level (does a rule gain real
+--fail-as-canonical (for pileups at a fixed threshold, e.g. 0.70): depth N_valid + N_fail and occupancy
+N_mod / (N_valid + N_fail), so calls below the threshold count as canonical, as in the gIVT tables; every rule
+(including --min-valid) then works on that depth and occupancy.
+For each rule and run: calls, precision, recall against the modification's main truth set, or --truth-set (any set
+cmp_ortho builds for the modification, e.g. m6A-SAC-seq, miCLIP-CITS) (precision is a lower bound: the maps are incomplete); recall split by the truth set's own level (does a rule gain real
 low-stoichiometry sites, and how much of the map is low-level at all?); precision by depth band; agreement
 between runs, separately at positions where both runs have < 100 or >= 100 valid reads (depth repeats between
 runs, so pooled agreement favours rules that call by depth). The comparison that matters is at matched recall:
@@ -124,6 +127,9 @@ def main():
     ap.add_argument('--ortho-dir')
     ap.add_argument('--fasta', required=True)
     ap.add_argument('--truth-tsv', help='testing: chrom, pos, strand[, level]')
+    ap.add_argument('--truth-set', help="cmp_ortho set to score against (default: the modification's main set)")
+    ap.add_argument('--fail-as-canonical', action='store_true',
+                    help='depth N_valid + N_fail, occupancy N_mod / (N_valid + N_fail): for fixed-threshold pileups')
     ap.add_argument('--mask-bed')
     ap.add_argument('--contig-regex', default=r'_random|_alt|_fix|_decoy|chrUn_|EBV|HLA-')
     ap.add_argument('--min-valid', type=int, default=20)
@@ -143,7 +149,7 @@ def main():
             ap.error(f'--background {b}: expected empirical or givt07:<table>')
     os.makedirs(a.out_dir, exist_ok=True)
     runs = cr.pairs(a.bed)
-    st = cr.TRUTH[a.mod]
+    st = a.truth_set or cr.TRUTH[a.mod]
     if a.truth_tsv:
         truth = pd.read_csv(a.truth_tsv, sep='\t')
     else:
@@ -151,7 +157,10 @@ def main():
         listed = listed[listed['mod'] == a.mod]
         truth, _ = co.check_against_reference(listed, co.Fasta(a.fasta))
         truth = co.add_consensus(truth)
+        sets = sorted(truth['set'].unique())
         truth = truth[truth['set'] == st]
+        if not len(truth):
+            sys.exit(f'no {a.mod} sites in truth set {st}; sets: {", ".join(sets)}')
     if 'level' not in truth:
         truth['level'] = np.nan
     mask = pd.read_csv(a.mask_bed, sep='\t', header=None, usecols=[0, 1, 2], names=['chrom', 'start', 'end'],
@@ -166,7 +175,7 @@ def main():
 
     sweep, by_level, by_depth, store, bg_summary = [], [], [], {}, []
     for name, path in runs:
-        d = cr.read_pileup(path, co.CODE[a.mod], a.min_valid, a.contig_regex, mask)
+        d = cr.read_pileup(path, co.CODE[a.mod], a.min_valid, a.contig_regex, mask, a.fail_as_canonical)
         keys = co.keys(d['chrom'], d['pos'].to_numpy(), d['strand'], ids)
         in_t = np.isin(keys, tk)
         tl = lvl.reindex(keys).to_numpy()
@@ -210,7 +219,7 @@ def main():
                 by_depth.append({'run': name, 'rule': r, 'depth_band': db, 'called': int(sel.sum()),
                                  'precision': in_t[sel].mean() if sel.any() else np.nan})
         store[name] = (keys, d['nvalid'].to_numpy(), calls)
-        print(f'{name}: {len(d):,} positions, {ncov:,} {st} sites covered; GLORI level of covered sites: '
+        print(f'{name}: {len(d):,} positions, {ncov:,} {st} sites covered; truth level of covered sites: '
               + ', '.join(f'{lb_} {int(((lbin == lb_) & in_t).sum()):,}' for lb_ in LEVEL_LABELS), file=sys.stderr)
 
     between = []

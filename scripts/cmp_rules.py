@@ -84,12 +84,19 @@ class FastaMM:
         return out
 
 
-def read_pileup(path, code, min_valid, contig_re, mask):
+def read_pileup(path, code, min_valid, contig_re, mask, fail_as_canonical=False):
+    """fail_as_canonical: calls that failed the pileup's threshold count as canonical, i.e. depth N_valid + N_fail and
+    percent modified 100 N_mod / (N_valid + N_fail), as the gIVT tables count (for pileups at a fixed threshold)."""
+    cols, names = [0, 1, 3, 5, 9, 10, 11], ['chrom', 'start', 'code', 'strand', 'nvalid', 'pct', 'nmod']
+    dtype = {'chrom': str, 'start': np.int64, 'code': str, 'strand': str, 'nvalid': np.int64, 'pct': np.float64,
+             'nmod': np.int64}
+    if fail_as_canonical:
+        cols, names, dtype = cols + [15], names + ['nfail'], {**dtype, 'nfail': np.int64}
     parts = []
-    for ch in pd.read_csv(path, sep='\t', header=None, usecols=[0, 1, 3, 5, 9, 10, 11], chunksize=4_000_000,
-                          names=['chrom', 'start', 'code', 'strand', 'nvalid', 'pct', 'nmod'],
-                          dtype={'chrom': str, 'start': np.int64, 'code': str, 'strand': str, 'nvalid': np.int64,
-                                 'pct': np.float64, 'nmod': np.int64}):
+    for ch in pd.read_csv(path, sep='\t', header=None, usecols=cols, chunksize=4_000_000, names=names, dtype=dtype):
+        if fail_as_canonical:
+            n = ch['nvalid'] + ch['nfail']
+            ch = ch.assign(nvalid=n, pct=100 * ch['nmod'] / n.clip(lower=1)).drop(columns='nfail')
         ch = ch[(ch['code'] == code) & (ch['nvalid'] >= min_valid)]
         if contig_re:
             ch = ch[~ch['chrom'].str.contains(contig_re, regex=True)]

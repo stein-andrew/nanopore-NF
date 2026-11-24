@@ -31,8 +31,11 @@ Since 24 Nov `bioinf_tools` has `PYTHONNOUSERSITE=1` (`conda env config vars`), 
 `~/.local/lib/python3.12/site-packages` and uses the env's pandas 2.3.3, matplotlib 3.9.1, pyarrow 16.1.0, pysam 0.22.1 and
 pod5 0.3.15 (`~/.local` has 3.0.2, 3.10.9, 22.0.0, 0.24.0 and 0.3.44). The 19 `~/.local` packages the env lacked were
 installed into it at the same versions; `currentview` (genometechlab git package) was not, since it needs pod5 >= 0.3.23.
-Jobs that call `.../envs/bioinf_tools/bin/python` without activating (all sweeps so far) still see `~/.local`; the wilson
-sweep tables and the truth sets came out identical under both setups.
+Jobs that call `.../envs/bioinf_tools/bin/python` without activating still see `~/.local`, so sbatch command lines now
+start with `PYTHONNOUSERSITE=1` (from 24 Nov; earlier sweeps ran on the `~/.local` packages). On the env's own versions
+the wilson sweep (mock), cmp_ortho truth-set loading and make_synthetic_results.py -> cohort_plots.py (all 18 figures)
+give the same tables as on the `~/.local` versions. Not pure conda: the 19 packages above and their 19 dependencies, and
+typing_extensions 4.16.0, were pip-installed on 24 Nov.
 
 ## Data
 
@@ -60,8 +63,8 @@ sweep tables and the truth sets came out identical under both setups.
 | Script | md5 | What it does |
 |---|---|---|
 | `cmp_ortho.py` | c6f76c9d103958d1a6c5962a3b876399 | truth-set loading, reference check, consensus sets, keys; per-run scoring |
-| `cmp_rules.py` | b12d19af5918e13a734c4eb90f721e24 | six site rules (pct20, or_k20, or_k20_f5, or_k20_f10, wilson10, bg5) on no-filter pileups: precision, recall, by depth, between runs, negatives. The version on disk (last changed 23 Nov 11:46); the md5 first listed here, cad681c773899abd82773e4291c8352d, matched no file or git object found, so what differed is unknown |
-| `wilson_sweep.py` | 300ebef5579a7e5c917bac90389d6b02 | Wilson lower-bound rules vs plain cutoffs: precision at matched recall, recall by GLORI level, agreement by depth. This is the version on disk (last changed 23 Nov 12:57) that produced all four sweeps (all reads and MAPQ 40, both models); the md5 first listed here, d1bd89ad10d27378e62f8c92c83007e2, matched no file found. Since 24 Nov: 4f269ae6569cf60801eb1e47092d6de6, which adds the opt-in wilsonbg rules (`--background empirical` and/or `--background givt07:<table>`); without `--background` its tables are byte-identical to 300ebef5's (two mock data sets), and with it the pct/wilson rows reproduce `wilson_q40v2_*` exactly. Mock test: `tests/mock_wilsonbg.py` (0d52b968d98fce8a621030382a153ed6) |
+| `cmp_rules.py` | 9d382e3f33edb0f5a5fa5c5015e3d8e9 | six site rules (pct20, or_k20, or_k20_f5, or_k20_f10, wilson10, bg5) on no-filter pileups: precision, recall, by depth, between runs, negatives. Since 24 Nov `read_pileup(..., fail_as_canonical=True)` reads N_fail (default unchanged). The version that produced every result before that is b12d19af5918e13a734c4eb90f721e24; the chat copy listed here first (cad681c773899abd82773e4291c8352d) is the same code with a final newline |
+| `wilson_sweep.py` | d677514780bead36294d6d9808287f9d | Wilson lower-bound rules vs plain cutoffs: precision at matched recall, recall by truth level, agreement by depth. History: 300ebef5579a7e5c917bac90389d6b02 produced the all-reads and MAPQ-40 sweeps (the chat copy listed here first, d1bd89ad10d27378e62f8c92c83007e2, is the same code with a final newline); 4f269ae6569cf60801eb1e47092d6de6 added the opt-in wilsonbg rules (`--background empirical` and/or `--background givt07:<table>`) and produced `wilsonbg_q40v2_*`; d6775147 adds `--truth-set` (any cmp_ortho set) and `--fail-as-canonical` (depth N_valid + N_fail and occupancy N_mod / (N_valid + N_fail) for every rule, the 20-read floor and the depth bands; for fixed-threshold pileups). Each step leaves the default tables byte-identical on the mock data sets. Mock test: `tests/mock_wilsonbg.py` (27acf031848f390b8a90568646f72673) |
 | `cmp_mappability.py` | f2a86999a385d231d33a7a94e8e37711 | calls by unique-read fraction (MAPQ-40 / all valid reads) and by static BEDs (GIAB); model gap within strata |
 | `cmp_pileup.sh` | 217a84f99b3f9bbfd28177af9bf22fdb | modkit pileups: `THRESH_MODE=fixed THRESHOLDS='A:0 C:0 G:0 T:0'` for no filter, optional `MIN_MAPQ` |
 | `make_short_figures.py` | 5d9bc2afde193ef29962ac54be1b4c6b | figures of the short v6 vs v5.2 report (needs `make_report_figures.py`, 475daa6f72da71b1f074d84830ecd4d7) |

@@ -19,7 +19,7 @@ whose false_positive_0.7_threshold is the planted rate of the 9-mer's centre 5-m
 9-mers (these must fall back to the empirical background) and decoy rows for code 'm' (rate 0.9, must be ignored).
 Run the sweep with --background empirical --background givt07:mock/context/mock_givt07.tsv.gz.
 summary: (1) with background 0, wilsonbg<c>_d<d> must equal wilson<c>_t<d>, and every wilsonbg<c>_t10_d<d> must equal
-wilson<c>_t10; (2) on the mock itself, wilsonbg<c>_t10_d<d> with d <= 5 against wilson<c>_t10 (equal wherever every
+wilson<c>_t10; (1b) cmp_rules.read_pileup(fail_as_canonical=True) on a handmade bedMethyl; (2) on the mock itself, wilsonbg<c>_t10_d<d> with d <= 5 against wilson<c>_t10 (equal wherever every
 background is <= 5%, as in the flat mock); (3) estimated against planted background per 5-mer; (4) the gIVT lookup
 against an independent one (9-mers cut from the sequence directly); (5) each family against the plain-cutoff curve and
 the Wilson 95% curve at matched recall (truth is complete here, so precision is exact); (6) where false calls fall.
@@ -28,6 +28,7 @@ import argparse
 import itertools
 import os
 import sys
+import tempfile
 
 import numpy as np
 import pandas as pd
@@ -143,6 +144,22 @@ def summary(a):
     print(f'(1) zero background: {len(pairs_) - len(bad)}/{len(pairs_)} wilsonbg rules identical to the Wilson rule '
           f'they reduce to{"; MISMATCH " + str(bad) if bad else ""}; rules(d) without p0 has no wilsonbg: '
           f'{not any(k.startswith("wilsonbg") for k in ws.rules(d))}')
+
+    # (1b) fail_as_canonical: depth N_valid + N_fail, occupancy N_mod / (N_valid + N_fail)
+    rows = [('chr1', 100, 'a', 20, 25.0, 5, 20),      # default: 20 reads, 25%; fail as canonical: 40 reads, 12.5%
+            ('chr1', 200, 'a', 10, 30.0, 3, 15),      # default: below 20 reads; fail as canonical: 25 reads, 12%
+            ('chr1', 300, 'm', 50, 50.0, 25, 0)]      # another code: never read for 'a'
+    with tempfile.NamedTemporaryFile('w', suffix='.bed', delete=False) as f:
+        for c, s, code, nv, pct, nm, nf in rows:
+            f.write('\t'.join(map(str, [c, s, s + 1, code, nv, '+', s, s + 1, '255,0,0', nv, f'{pct:.2f}', nm,
+                                        nv - nm, 0, 0, nf, 0, 0])) + '\n')
+    d0 = cr.read_pileup(f.name, 'a', 20, None, None)
+    d1 = cr.read_pileup(f.name, 'a', 20, None, None, fail_as_canonical=True)
+    os.unlink(f.name)
+    ok = (d0[['start', 'nvalid', 'pct']].values.tolist() == [[100, 20, 25.0]]
+          and d1[['start', 'nvalid', 'pct']].values.tolist() == [[100, 40, 12.5], [200, 25, 12.0]])
+    print(f'(1b) fail_as_canonical reading: {"as expected" if ok else "WRONG"} (default {d0[["start", "nvalid", "pct"]].values.tolist()}, '
+          f'fail as canonical {d1[["start", "nvalid", "pct"]].values.tolist()})')
 
     # (2) the t10 variants on the mock: equal to wilson<c>_t10 wherever background + d <= 10%
     fa = cr.FastaMM(f'{a.mock_dir}/ref.fa')
