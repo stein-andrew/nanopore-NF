@@ -121,6 +121,6 @@ process ISOQUANT_REQUANT {
     stub:
     def id = meta.id
     """
-    touch ${id}.transcript_counts.tsv ${id}.read_assignments.tsv.gz ${id}.isoquant.log
+    touch ${id}.gene_counts.tsv ${id}.transcript_counts.tsv ${id}.read_assignments.tsv.gz ${id}.isoquant.log
     """
 }
