@@ -34,8 +34,13 @@ installed into it at the same versions; `currentview` (genometechlab git package
 Jobs that call `.../envs/bioinf_tools/bin/python` without activating still see `~/.local`, so sbatch command lines now
 start with `PYTHONNOUSERSITE=1` (from 24 Nov; earlier sweeps ran on the `~/.local` packages). On the env's own versions
 the wilson sweep (mock), cmp_ortho truth-set loading and make_synthetic_results.py -> cohort_plots.py (all 18 figures)
-give the same tables as on the `~/.local` versions. Not pure conda: the 19 packages above and their 19 dependencies, and
-typing_extensions 4.16.0, were pip-installed on 24 Nov.
+give the same tables as on the `~/.local` versions. The env's state is recorded in `envs/bioinf_tools.conda.yml` (`conda
+env export --no-builds`) and `envs/bioinf_tools.pip.txt` (`pip freeze`), both written with `PYTHONNOUSERSITE=1` on 24 Nov.
+Not pure conda (decision: keep it so): pip-installed are openpyxl, et-xmlfile and pyxlsb (before 24 Nov, for the GLORI
+.xlsx/.xlsb truth tables), and on 24 Nov the 19 packages only `~/.local` had (dash, dash-bootstrap-components, kaleido,
+logomaker, umap-learn, pynndescent, matplotlib-venn, nbformat, numexpr, Bottleneck, pydantic, ...) with their 19
+dependencies and typing_extensions 4.16.0 (over conda's 4.12.2), so that switching off the user site removed nothing the
+`~/.local` setup provided.
 
 ## Data
 
