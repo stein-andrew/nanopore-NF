@@ -42,7 +42,7 @@ workflow {
              "references=${align_to.join(',')}, mods=${mod_models.join(',') ?: 'none'}"
 
     // mv only exists when dorado emitted moves; asking for it otherwise fails the check.
-    def carry = params.carry_tags.tokenize(',').findAll { t -> t != 'mv' || params.emit_moves }.join(',')
+    def carry = params.carry_tags.tokenize(',').findAll { t -> t != 'mv' || params.emit_moves.toString() == 'true' }.join(',')
 
     // references: FASTA + cached .fai and .mmi
     ch_fasta = channel.fromList(align_to.collect { name -> tuple(name, file(params.genomes[name], checkIfExists: true)) })
@@ -115,7 +115,7 @@ workflow {
         .collectFile(name: 'checksums.md5', newLine: true, sort: true)
 
     publish:
-    ubam        = params.publish_ubam ? ch_ubam : channel.empty()
+    ubam        = params.publish_ubam.toString() == 'true' ? ch_ubam : channel.empty()
     bam         = ch_final
     qc          = ch_qc
     samplesheet = ch_samplesheet
@@ -211,6 +211,10 @@ def validateParams(align_to, mod_models) {
         error("basecall.nf: " + "pick a cluster with -profile explorer or -profile aicr")
     if( !(params.aligner in ['minimap2', 'parabricks']) )
         error("basecall.nf: " + "--aligner must be minimap2 or parabricks, not '${params.aligner}'")
+    ['emit_moves', 'estimate_poly_a', 'publish_ubam'].each { name ->
+        if( !(params[name].toString() in ['true', 'false']) )    // the command line gives strings
+            error("basecall.nf: " + "${name} must be true or false, not '${params[name]}'")
+    }
     def cmods = mod_models.findAll { m -> m =~ /^(5mCG|5mC_|4mC)/ }
     if( cmods.size() > 1 )
         error("basecall.nf: " + "dorado allows one C modification model per run; got ${cmods.join(', ')}")

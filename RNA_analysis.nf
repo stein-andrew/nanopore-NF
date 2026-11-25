@@ -125,7 +125,7 @@ workflow {
     // ---- modifications. params.mods_unique_only (default): on the MAPQ >= isoform_min_mapq BAM, so that
     // reads which map equally well to several places (rRNA, snRNA, paralogs, pseudogenes) cannot pile up
     // at look-alike loci as constitutive "sites". false: every primary alignment of the Stage 1 BAM (v1).
-    ch_mod_bam = params.mods_unique_only ? FILTER_MAPQ.out.bam : channel.fromList(rows)
+    ch_mod_bam = params.mods_unique_only.toString() == 'true' ? FILTER_MAPQ.out.bam : channel.fromList(rows)
     ch_errtab = channel.value(file(params.givt_error_table, checkIfExists: true))
     // loci deeper than the depth cap randomly subsampled first, so the cap never chooses reads
     SUBSAMPLE_LOCI(ch_mod_bam)
@@ -340,7 +340,7 @@ def validateParams(refs) {
     }
     if( !(params.subsample_seed instanceof Integer) || params.subsample_seed < 0 )
         error("RNA_analysis.nf: " + "subsample_seed must be a whole number >= 0, not '${params.subsample_seed}'")
-    ['mods_fail_canonical', 'mods_wilson_columns'].each { name ->
+    ['mods_unique_only', 'mods_fail_canonical', 'mods_wilson_columns'].each { name ->
         if( !(params[name].toString() in ['true', 'false']) )    // the command line gives strings
             error("RNA_analysis.nf: " + "${name} must be true or false, not '${params[name]}'")
     }
