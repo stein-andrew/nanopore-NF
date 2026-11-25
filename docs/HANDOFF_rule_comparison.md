@@ -181,15 +181,27 @@ of sites, pct_20 calls differ at 4 of 171,606 sites).
   pct_20; gain at matched recall GLORI +0.8 to +2.9, CITS +0.8 to +1.3, CIMS +1.0 to +1.8, SAC -0.24 to +0.10. At >= 100
   reads it is the most precise of the three under every definition (GLORI (4): 100-299 / 300+ 0.937 / 0.924 vs pct_20
   0.910 / 0.910); repeat at >= 100 reads (4): 0.939 vs 0.914.
+- Every Wilson rule on definitions 2 and 4 (`$OUT/summaries/wilson_rules_def2_def4.tsv`: wilson90/95/99 t5-t20 and the 27
+  gIVT rules; the empirical wilsonbg rules were not computed for these two definitions): none has precision >= definition-4
+  pct_20 and more true calls in every run on every map. Definition 2 fails everywhere; on definition 4, givt07_99_d7.5,
+  givt07_95_d10 and wilson95_t10 pass on GLORI and both miCLIP maps but not m6A-SAC-seq (ties within a few true calls,
+  or slightly lower precision), and none keeps pct_20's precision at >= 100 reads. Largest gain at matched recall: the
+  givt07 d = 5 rules (definition 4, GLORI +7.5), at 15-17 points less precision than pct_20.
+
+**Conclusion (user, 24 Nov):** no Wilson rule beats definition-4 pct_20 on every map, so the m6A rule is definition 4
+(pipeline thresholds, failed calls counted as canonical) + pct_20 (+ fpcorr_pct20, as now). Wilson rules are reporting
+columns only.
 
 ### MOD_STAGES reference-base check (24 Nov; cohort-v2 results, `cohort-v1/results-v2`)
 
 Rows whose reference base on their strand is not the code's base: cov20 0.15-0.54% per code; cov20_pct20 0.2-0.7% (m6A)
 to 7-25% (Ino, Am, Cm, Psi, Um, Gm); cov20_fpcorr_pct20 0 (gIVT cannot correct them). They reach cohort_plots.py only
 through fig 3's table, fig 12's not-correctable share (they are 99.8-99.98% of uncorrectable rows) and fig 13's
-cross-talk and background (0.24-0.56% of target rows). Branch `mods-filter-mismatch`: fp_correct.py --filter_mismatch in
-MOD_STAGES (uncorrected stages rebuilt from the checked rows; raw.bed untouched) and upper-cased base comparison; final
-stage unchanged (checked on ST1932 chr22). Goes in with the next cohort rerun.
+cross-talk and background (0.24-0.56% of target rows). Merged to main 24 Nov (edf95ca, from branch `mods-filter-mismatch`):
+fp_correct.py --filter_mismatch in MOD_STAGES (uncorrected stages rebuilt from the checked rows; raw.bed untouched) and
+upper-cased base comparison; final stage unchanged (checked on ST1932 chr22); tests: compare_fpcorr.py --run, the polars
+port harness (its one DIFFERENT, polya_features on real chr22, is in code this change does not touch), a stub run (200
+processes, 0 failed). The cohort is not rerun for it; it goes in with the next cohort rerun.
 
 ## Open tasks, in order
 
