@@ -14,7 +14,11 @@
 // MOD_STAGES     raw -> Nvalid_cov >= C -> (and) percent >= P; FP correction on the coverage
 //                stage -> FP-corrected percent >= P; a per-stage, per-mod-code row count.
 //                Correcting the coverage stage, not the raw pileup, gives the same corrected
-//                stage from far fewer rows.
+//                stage from far fewer rows. Rows whose reference base (on their strand) is not
+//                the modification's base are dropped from every stage (fp_correct.py
+//                --filter_mismatch; they are calls at SNVs and mismatches, and gIVT cannot
+//                correct them anyway); raw.bed keeps them, and mod_stages.tsv counts the
+//                coverage stage before the check (cov<C>_all).
 //
 // The correction is bin/fp_correct.py: a vectorized drop-in for gIVT's IVT_fp_correction.py
 // (github.com/genometechlab/gIVT, kept in bin/ for comparison) with the same arguments and
@@ -96,23 +100,28 @@ process MOD_STAGES {
     def cov = "${prefix}.cov${min_cov}"
     """
     check_rows.sh ${raw} ${raw_rows} 18      # the pileup arrived whole (bin/validated_pileup.sh)
-    mod_stages.sh coverage ${raw} ${min_cov} ${min_pct} ${prefix}
+    mod_stages.sh coverage ${raw} ${min_cov} ${min_pct} ${prefix}.all     # before the base check; not published
 
-    # An empty coverage stage just stays empty. The log holds fp_correct.py's per-step timings
-    # and its count of sites per reason (corrected / no 9mer / base mismatch / not in table).
+    # --filter_mismatch drops rows whose reference base on their strand is not the modification's
+    # base (e.g. Psi calls on U reads where the reference has C); raw.bed keeps them. An empty
+    # coverage stage just stays empty. The log holds fp_correct.py's per-step timings and its count
+    # of sites per reason (corrected / no 9mer / base mismatch / not in table).
     export POLARS_MAX_THREADS=${task.cpus}
-    if [[ -s ${cov}.bed ]]; then
-        fp_correct.py -m ${cov}.bed -ref ${fasta} -e ${error_table} \\
-            -mt \$(cat ${givt_flags}) -o ${cov}_fpcorr.bed > ${prefix}.fpcorr.log 2>&1
+    if [[ -s ${prefix}.all.cov${min_cov}.bed ]]; then
+        fp_correct.py -m ${prefix}.all.cov${min_cov}.bed -ref ${fasta} -e ${error_table} \\
+            -mt \$(cat ${givt_flags}) --filter_mismatch -o ${cov}_fpcorr.bed > ${prefix}.fpcorr.log 2>&1
     else
         : > ${cov}_fpcorr.bed
         echo "no rows with Nvalid_cov >= ${min_cov}: nothing to correct" > ${prefix}.fpcorr.log
     fi
     gzip -f ${prefix}.fpcorr.log
 
+    # the uncorrected stages again, from exactly the rows the corrected ones were made from
+    mod_stages.sh restage ${cov}_fpcorr.bed ${min_cov} ${min_pct} ${prefix}
     mod_stages.sh fpcorr ${cov}_fpcorr.bed ${min_pct} ${cov}_fpcorr_pct${min_pct}.bed
     mod_stages.sh summary ${prefix}.mod_stages.tsv \\
         raw=${raw} \\
+        cov${min_cov}_all=${prefix}.all.cov${min_cov}.bed \\
         cov${min_cov}=${cov}.bed \\
         cov${min_cov}_pct${min_pct}=${cov}_pct${min_pct}.bed \\
         cov${min_cov}_fpcorr=${cov}_fpcorr.bed \\

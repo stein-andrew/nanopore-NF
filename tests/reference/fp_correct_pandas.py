@@ -12,12 +12,15 @@ Same as IVT_fp_correction.py (checked row for row by tests/compare_fpcorr.py):
     threshold >= 0.99 falls back to the 0.70 column; the pipeline refuses those first;
   * which sites get no correction (empty column 19), or are dropped by the --filter_*
     flags, and the order the checks apply in: no 9mer (contig not in the reference, or
-    within 4 bp of an end) -> centre base is not the mod's base (after reverse complement;
-    case-sensitive, so a soft-masked lowercase base is a mismatch, as in gIVT) -> 9mer
-    and mod code not in the table;
+    within 4 bp of an end) -> centre base is not the mod's base (after reverse complement)
+    -> 9mer and mod code not in the table;
   * row order, and --min_coverage on column 10.
 
 Different on purpose:
+  * bases are compared upper-cased, so a soft-masked reference gives the same result as an
+    upper-case one; gIVT is case-sensitive (a lowercase centre base is a mismatch, a 9mer
+    with a lowercase base is not in its table). On an upper-case reference, such as the
+    pipeline's, the two agree;
   * columns 1-18 are each input line's own text (gIVT round-trips them through pandas,
     which rewrites e.g. 50.00 as 50.0);
   * no stdout line per uncorrectable site, one count per reason instead;
@@ -57,6 +60,8 @@ for _a, _b in zip(b'ACGT', b'TGCA'):
 BASE_CODE = np.full(256, 255, dtype=np.uint8)                            # 255 = not A/C/G/T
 for _i, _b in enumerate(b'ACGT'):
     BASE_CODE[_b] = _i
+UPPER = np.arange(256, dtype=np.uint8)                                   # a-z -> A-Z: soft-masking ignored
+UPPER[ord('a'):ord('z') + 1] -= 32
 
 
 def log(msg):
@@ -218,6 +223,7 @@ def correct(sites, fasta, index, fps, present):
     0 corrected, 1 no 9mer, 2 centre base mismatch, 3 9mer/mod not in table."""
     n = len(sites['start'])
     kmers, have = gather_kmers(sites['chrom_codes'], sites['chroms'], sites['start'], fasta)
+    kmers = UPPER[kmers]
 
     minus = sites['minus']
     kmers[minus] = COMPLEMENT[kmers[minus]][:, ::-1]

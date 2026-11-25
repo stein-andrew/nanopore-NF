@@ -4,6 +4,10 @@
 #   mod_stages.sh coverage <raw.bed> <min_cov> <min_pct> <prefix>
 #       <prefix>.cov<C>.bed           Nvalid_cov (col 10) >= C
 #       <prefix>.cov<C>_pct<P>.bed    ... and percent modified (col 11) >= P
+#   mod_stages.sh restage <fpcorr.bed> <min_cov> <min_pct> <prefix>
+#       the same two stages again, from a 19-column file of fp_correct.py --filter_mismatch:
+#       <prefix>.cov<C>.bed is its columns 1-18 (each kept input line as it was), so the
+#       uncorrected stages hold exactly the rows the corrected ones were made from
 #   mod_stages.sh fpcorr <fpcorr.bed> <min_pct> <out.bed>
 #       rows whose FP-corrected percent (col 19, from IVT_fp_correction.py) is a number >= P.
 #       gIVT leaves col 19 empty where it cannot correct (base mismatch, no 9mer, kmer not in
@@ -36,6 +40,14 @@ coverage)
     awk -F'\t' -v c="$cov" '$10 + 0 >= c' "$raw" > "$prefix.cov$cov.bed"
     awk -F'\t' -v p="$pct" '$11 + 0 >= p' "$prefix.cov$cov.bed" > "$prefix.cov${cov}_pct$pct.bed"
     ;;
+restage)
+    (( $# == 5 )) || die "usage: $0 restage <fpcorr.bed> <min_cov> <min_pct> <prefix>"
+    in=$2 cov=$3 pct=$4 prefix=$5
+    number min_cov "$cov"; number min_pct "$pct"
+    expect_cols "$in" 19
+    cut -f1-18 "$in" > "$prefix.cov$cov.bed"
+    awk -F'\t' -v p="$pct" '$11 + 0 >= p' "$prefix.cov$cov.bed" > "$prefix.cov${cov}_pct$pct.bed"
+    ;;
 fpcorr)
     (( $# == 4 )) || die "usage: $0 fpcorr <fpcorr.bed> <min_pct> <out.bed>"
     in=$2 pct=$3 out=$4
@@ -59,6 +71,6 @@ summary)
     done
     ;;
 *)
-    die "usage: $0 {coverage|fpcorr|summary} ..."
+    die "usage: $0 {coverage|restage|fpcorr|summary} ..."
     ;;
 esac
