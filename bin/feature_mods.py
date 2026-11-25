@@ -19,7 +19,11 @@ levels, from bin/mod_feature_counts.sh's counts, per (isoform or gene, site, mod
   percent   100 * n_mod / n_valid, then FP-corrected by fp_correct.py's own functions (same
             9mer, mod code and thresholds as the sample-level stage)
 In the BEDs: n_valid >= --min-cov and corrected percent >= --min-pct, the final-stage rule
-applied per feature.
+applied per feature. With mod_feature_counts.sh --fail-canonical, n_valid includes the calls
+that failed their threshold (counted as canonical), as in MOD_STAGES with mods_fail_canonical.
+--wilson-columns adds two reporting columns to feature_mods.tsv.gz: percent_wilson_lb95 (95%
+Wilson lower bound of n_mod / n_valid) and givt_d20 (1 when that bound is >= 100 * the gIVT
+rate + 20, 0 when not, empty where gIVT has no rate). They do not change the final rule.
 
 First, the 'all' level (every read) must reproduce the pileup's Nvalid_cov and Nmod at the
 candidate sites. If fewer than --min-agreement of them match exactly, extract calls and
@@ -41,7 +45,7 @@ from collections import defaultdict
 import numpy as np
 import polars as pl
 
-from fp_correct import MOD_TO_BASE, correct, load_table
+from fp_correct import MOD_TO_BASE, correct, load_table, wilson_lb
 from tabular import codes_of, read_tsv, read_tsv_header, write_tsv
 
 SITE = ['chrom', 'pos', 'strand']
@@ -111,9 +115,9 @@ def thresholds_from(path):
 
 
 def fp_corrected(rows, reference, errortable, givt_flags):
-    """Corrected percent for each row, by fp_correct.py's own functions (NaN where none)."""
+    """Corrected percent and gIVT rate for each row, by fp_correct.py's own functions (NaN where none)."""
     if rows.height == 0:
-        return np.array([])
+        return np.array([]), np.array([])
     chrom_codes, chroms = codes_of(rows['chrom'])
     mod_codes, mods = codes_of(rows['mod'])
     sites = dict(chrom_codes=chrom_codes, chroms=[str(c) for c in chroms],
@@ -121,8 +125,8 @@ def fp_corrected(rows, reference, errortable, givt_flags):
                  start=rows['pos'].to_numpy().astype(np.int64), minus=(rows['strand'] == '-').to_numpy(),
                  pct=rows['percent'].to_numpy().astype(np.float64))
     index, fps, present = load_table(errortable, thresholds_from(givt_flags))
-    adjusted, _reason = correct(sites, reference, index, fps, present)
-    return adjusted
+    adjusted, _reason, rate = correct(sites, reference, index, fps, present)
+    return adjusted, rate
 
 
 def in_regions_mask(path):
@@ -192,8 +196,16 @@ def cmd_levels(args):
 
     feat = rows.filter(pl.col('level').is_in(['isoform', 'gene'])) \
                .with_columns((100 * pl.col('n_mod') / pl.col('n_valid')).alias('percent'))
-    adjusted = fp_corrected(feat, args.reference, args.errortable, args.givt_flags)
+    adjusted, rate = fp_corrected(feat, args.reference, args.errortable, args.givt_flags)
     feat = feat.with_columns(pl.Series('percent_fpcorr', adjusted, dtype=pl.Float64).fill_nan(None))
+    extra = []
+    if args.wilson_columns:
+        lb = 100 * wilson_lb(feat['n_mod'].to_numpy(), feat['n_valid'].to_numpy())
+        with np.errstate(invalid='ignore'):
+            d20 = np.where(np.isfinite(rate), (lb >= 100 * rate + 20).astype(float), np.nan)
+        feat = feat.with_columns(pl.Series('percent_wilson_lb95', lb, dtype=pl.Float64),
+                                 pl.Series('givt_d20', d20, dtype=pl.Float64).fill_nan(None).cast(pl.Int64))
+        extra = ['percent_wilson_lb95', 'givt_d20']
     feat = feat.with_columns(((pl.col('n_valid') >= args.min_cov) & (pl.col('percent_fpcorr') >= args.min_pct))
                              .fill_null(False).alias('final'))
 
@@ -220,7 +232,7 @@ def cmd_levels(args):
     write_bed(feat.filter((pl.col('level') == 'gene') & pl.col('final')), f"{p}.gene_mods.bed")
     full = feat.select('level', 'feature', 'gene_id', 'ref_gene_name', 'ref_tx_id', 'structural_category', 'chrom', 'pos',
                        'strand', 'mod', 'n_valid', 'n_mod', 'percent', 'percent_fpcorr', 'sample_pct_fpcorr',
-                       pl.col('final').cast(pl.Int64))
+                       pl.col('final').cast(pl.Int64), *extra)
     write_tsv(full, f"{p}.feature_mods.tsv.gz", float_precision=4)
 
     with open(f"{p}.feature_mods.summary.tsv", 'w') as out:
@@ -262,6 +274,8 @@ def main():
                            help='BED of regions whose sites are left out of the pileup agreement check (kept in the levels)')
             s.add_argument('--min-agreement', type=float, default=0.95,
                            help='fraction of candidate sites where extract calls must reproduce the pileup (default 0.95)')
+            s.add_argument('--wilson-columns', action='store_true',
+                           help='feature_mods.tsv.gz: add percent_wilson_lb95 and givt_d20 (reporting only)')
             s.add_argument('--prefix', required=True)
     args = ap.parse_args()
     cmd_positions(args) if args.cmd == 'positions' else cmd_levels(args)

@@ -3,10 +3,13 @@
 # per gene of each read. Reads the calls from stdin as they stream out of modkit, so the
 # per-read table (sites x depth rows) is never written anywhere.
 #
-#   modkit extract calls S.bam - --include-bed positions.bed ... | mod_feature_counts.sh S.read_features.tsv > counts.tsv
+#   modkit extract calls S.bam - --include-bed positions.bed ... | mod_feature_counts.sh S.read_features.tsv [--fail-canonical] > counts.tsv
 #
 # read_features.tsv  read_id, isoform, gene ('.' = none), from bin/read_features.py
 # counts.tsv         level, feature, chrom, pos, strand, base, call_code, n   (passing calls only)
+# --fail-canonical   calls that failed their threshold count as canonical calls ('-') instead of
+#                    being left out, matching MOD_STAGES with params.mods_fail_canonical (so the
+#                    'all' level still reproduces the staged pileup's Nvalid_cov and Nmod)
 #   base             the read's base at the site (canonical_base): a read whose base differs
 #                    from the reference's is a different-base read in modkit pileup (Ndiff),
 #                    not valid coverage, so downstream only calls on the mod's own base count
@@ -20,11 +23,17 @@
 # missing column, is an error rather than a guess.
 set -euo pipefail
 
-feats=${1:?usage: modkit extract calls ... | $0 <read_features.tsv> > counts.tsv}
+feats=${1:?usage: modkit extract calls ... | $0 <read_features.tsv> [--fail-canonical] > counts.tsv}
 [[ -r $feats ]] || { echo "mod_feature_counts.sh: cannot read $feats" >&2; exit 1; }
+fc=0
+case ${2:-} in
+    '') ;;
+    --fail-canonical) fc=1 ;;
+    *) echo "mod_feature_counts.sh: unknown option ${2}" >&2; exit 1 ;;
+esac
 
 # POSIX awk only: the image's awk is Ubuntu's mawk.
-awk -F'\t' -v feats="$feats" '
+awk -F'\t' -v feats="$feats" -v fc="$fc" '
 BEGIN {
     OFS = "\t"
     while ((getline line < feats) > 0) {
@@ -47,13 +56,14 @@ NR == 1 {
     next
 }
 {
-    if ($fl == "true") { failed++; next }
-    if ($fl != "false") { msg = "unrecognised fail value \"" $fl "\" on line " NR; exit }
-    k = $ch OFS $p OFS $sc OFS $cb OFS $cc
+    code = $cc
+    if ($fl == "true") { failed++; if (!fc) next; code = "-" }
+    else if ($fl != "false") { msg = "unrecognised fail value \"" $fl "\" on line " NR; exit }
+    k = $ch OFS $p OFS $sc OFS $cb OFS code
     all[k]++
     if ($r in iso)  n_iso[iso[$r] OFS k]++
     if ($r in gene) n_gene[gene[$r] OFS k]++
-    passed++
+    if ($fl == "false") passed++
 }
 END {
     if (msg != "") { print "mod_feature_counts.sh: " msg > "/dev/stderr"; exit 1 }
@@ -61,5 +71,6 @@ END {
     for (k in all)    print "all", ".", k, all[k]
     for (k in n_iso)  print "isoform", k, n_iso[k]
     for (k in n_gene) print "gene", k, n_gene[k]
-    printf "mod_feature_counts.sh: %d passing calls, %d failing\n", passed, failed > "/dev/stderr"
+    printf "mod_feature_counts.sh: %d passing calls, %d failing%s\n", passed, failed,
+           (fc ? " (counted as canonical)" : "") > "/dev/stderr"
 }'

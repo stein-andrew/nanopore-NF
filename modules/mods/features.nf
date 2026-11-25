@@ -12,6 +12,10 @@
 // Calls come from the Stage 1 BAM; which isoform and gene a read belongs to comes from the
 // IsoQuant requantification (MAPQ >= 40 reads): isoform = unique assignment, as in the
 // unique_only counts; gene = a single gene across the read's assignments.
+// params.mods_fail_canonical: calls that failed their threshold count as canonical here too
+// (mod_feature_counts.sh --fail-canonical), as in MOD_STAGES, so per-feature occupancy uses the
+// same definition and the all-reads check still matches the staged pileup.
+// params.mods_wilson_columns: feature_mods.tsv.gz gains percent_wilson_lb95 and givt_d20.
 
 process MOD_FEATURES {
     tag "${meta.id}:${meta.ref}"
@@ -30,6 +34,8 @@ process MOD_FEATURES {
     script:
     prefix = meta.id
     def cand = params.feature_mods_candidate_pct
+    def fc = params.mods_fail_canonical.toString() == 'true' ? '--fail-canonical' : ''    // also 'true' from the CLI
+    def wilson = params.mods_wilson_columns.toString() == 'true' ? '--wilson-columns' : ''
     """
     set -o pipefail      # a modkit failure mid-stream must fail the task, not leave partial counts
 
@@ -49,7 +55,7 @@ process MOD_FEATURES {
             --threads ${task.cpus} \\
             --log-filepath ${prefix}.extract_calls.log \\
             --suppress-progress \\
-          | mod_feature_counts.sh ${prefix}.read_features.tsv > ${prefix}.counts.tsv
+          | mod_feature_counts.sh ${prefix}.read_features.tsv ${fc} > ${prefix}.counts.tsv
     else
         : > ${prefix}.counts.tsv
         echo "no candidate sites: nothing to extract" > ${prefix}.extract_calls.log
@@ -62,7 +68,7 @@ process MOD_FEATURES {
         --reference ${fasta} --errortable ${error_table} --givt-flags ${givt_flags} \\
         --min-cov ${params.mods_min_coverage} --min-pct ${params.mods_min_percent} \\
         --min-agreement ${params.feature_mods_min_agreement} \\
-        --agreement-exclude ${exempt_bed} \\
+        --agreement-exclude ${exempt_bed} ${wilson} \\
         --prefix ${prefix}
     """
 

@@ -52,7 +52,9 @@ workflow {
              "MAPQ >= ${params.isoform_min_mapq}, per-sample model filter > ${params.isoform_min_cpm}, " +
              "cohort median CPM > ${params.cohort_min_median_cpm}; " +
              "mod thresholds ${params.mod_filter_thresholds ?: 'from sample-probs'}, " +
-             "stages cov >= ${params.mods_min_coverage}, pct >= ${params.mods_min_percent}"
+             "stages cov >= ${params.mods_min_coverage}, pct >= ${params.mods_min_percent}, " +
+             "failed calls ${params.mods_fail_canonical.toString() == 'true' ? 'counted as canonical' : 'dropped'}" +
+             (params.mods_wilson_columns.toString() == 'true' ? ', Wilson columns on' : '')
 
     // references: (ref, fasta, fai) and (ref, gtf)
     ch_ref = FAIDX(channel.fromList(refs.collect { ref -> tuple(ref, file(params.genomes[ref], checkIfExists: true)) }))
@@ -338,6 +340,10 @@ def validateParams(refs) {
     }
     if( !(params.subsample_seed instanceof Integer) || params.subsample_seed < 0 )
         error("RNA_analysis.nf: " + "subsample_seed must be a whole number >= 0, not '${params.subsample_seed}'")
+    ['mods_fail_canonical', 'mods_wilson_columns'].each { name ->
+        if( !(params[name].toString() in ['true', 'false']) )    // the command line gives strings
+            error("RNA_analysis.nf: " + "${name} must be true or false, not '${params[name]}'")
+    }
     if( !params.globin_genes )
         error("RNA_analysis.nf: " + "globin_genes is empty (conf/rna.config): the read QC needs at least one gene name")
     if( params.variant_mask_mhc && !(params.variant_mask_mhc ==~ /[^:]+:[0-9]+-[0-9]+/) )
