@@ -25,9 +25,12 @@ Every rule sees positions with >= 20 valid reads (masked loci and alt/decoy cont
                      9-mer is missing. It is a lower bound on no-filter background: the table counts calls with
                      probability >= 0.70 as modified and everything else as canonical, over reference-matched 9-mers.
                      Valid only for the model the table was built from (the GM12878 table: v5.2, Dorado 1.0.0).
-  fpcorr_pct20       (with givt07) the pipeline's cov20_fpcorr_pct20: percent modified - 100 * the gIVT 0.70 rate >= 20
+  fpcorr_pct20       (with givt07) the pipeline's cov20_fpcorr_pct20: percent modified - 100 * the gIVT rate >= 20
                      (bin/fp_correct.py + mod_stages.sh fpcorr): any 9-mer in the table is corrected, whatever its
-                     support; sites the table cannot correct are never called, as in the pipeline (no fallback)
+                     support; sites the table cannot correct are never called, as in the pipeline (no fallback). The
+                     rate comes from the column of --fpcorr-threshold (the pileup's threshold for the modification's base)
+                     rounded down to the table's 0.01 grid, 0.70 at the least, as gIVT's mod_to_col picks it (default
+                     0.70: no-filter and 0.70 pileups). The wilsonbg_givt07 rules always use the 0.70 column.
 --background can be given more than once. background_summary.tsv: per run and background, median background at DRACH
 and other sites (5-mer on the RNA strand; DRACH is m6A's motif, the split is reported for every modification).
 --fail-as-canonical (for pileups at a fixed threshold, e.g. 0.70): depth N_valid + N_fail and occupancy
@@ -61,7 +64,7 @@ import cmp_rules as cr  # noqa: E402
 PCT = [10, 12.5, 15, 17.5, 20, 22.5, 25, 27.5, 30, 35, 40, 50]
 CONF = {90: 1.645, 95: 1.960, 99: 2.576}
 TARGETS = [5, 7.5, 10, 12.5, 15, 17.5, 20]
-DELTAS = [2.5, 5, 7.5, 10, 12.5, 15]
+DELTAS = [2.5, 5, 7.5, 10, 12.5, 15, 20]
 T10_CONF, T10_DELTAS = [95, 90], [2.5, 5, 10]
 GIVT_MIN_SUPPORT = 200
 LEVEL_BINS = [0, 10, 20, 40, 101]
@@ -103,13 +106,23 @@ def family(r):
     return 'pct' if r.startswith('pct_') and '_min' not in r else ('depth floor' if '_min' in r else r.split('_')[0])
 
 
-def load_givt(path, code):
-    """gIVT 9-mer table -> (false_positive_0.7_threshold, support), indexed by 9-mer, for one modification code."""
-    t = pd.read_csv(path, sep='\t', usecols=['mer', 'mod', 'false_positive_0.7_threshold', 'support'], dtype={'mod': str})
+def givt_column(threshold):
+    """the table column for a pileup threshold: rounded down to the 0.01 grid, 0.70 at the least."""
+    c = max(70, int(np.floor(threshold * 100 + 1e-6))) / 100
+    return f'false_positive_{c:g}_threshold'
+
+
+def load_givt(path, code, fpcorr_col='false_positive_0.7_threshold'):
+    """gIVT 9-mer table -> ((0.70 rate, support), fpcorr_col rate), indexed by 9-mer, for one modification code."""
+    cols = list(dict.fromkeys(['mer', 'mod', 'false_positive_0.7_threshold', fpcorr_col, 'support']))
+    head = pd.read_csv(path, sep='\t', nrows=0).columns
+    if fpcorr_col not in head:
+        sys.exit(f'{path}: no column {fpcorr_col}')
+    t = pd.read_csv(path, sep='\t', usecols=cols, dtype={'mod': str})
     t = t[t['mod'] == code].set_index('mer')
     if not len(t):
         sys.exit(f'{path}: no rows for modification code {code}')
-    return t['false_positive_0.7_threshold'], t['support']
+    return (t['false_positive_0.7_threshold'], t['support']), t[fpcorr_col]
 
 
 def givt_p0(table, km9, fallback):
@@ -142,16 +155,19 @@ def main():
     ap.add_argument('--min-valid', type=int, default=20)
     ap.add_argument('--background', action='append', default=[], metavar='empirical|givt07:TABLE',
                     help='add the wilsonbg rules for this background (repeat for both); see the description')
+    ap.add_argument('--fpcorr-threshold', type=float, default=0.70,
+                    help="the pileup's threshold for the modification's base: picks the gIVT column for fpcorr_pct20")
     ap.add_argument('--trim', type=float, default=0.9, help='for --background empirical, as in cmp_rules.py')
     ap.add_argument('--min-context-sites', type=int, default=30, help='for --background empirical, as in cmp_rules.py')
     ap.add_argument('--out-dir', required=True)
     a = ap.parse_args()
-    use_emp, givt = False, None
+    use_emp, givt, fpc_col = False, None, givt_column(a.fpcorr_threshold)
     for b in a.background:
         if b == 'empirical':
             use_emp = True
         elif b.startswith('givt07:'):
-            givt = load_givt(b.partition(':')[2], co.CODE[a.mod])
+            givt, givt_fpc = load_givt(b.partition(':')[2], co.CODE[a.mod], fpc_col)
+            print(f'fpcorr_pct20: gIVT column {fpc_col} (threshold {a.fpcorr_threshold:g})', file=sys.stderr)
         else:
             ap.error(f'--background {b}: expected empirical or givt07:<table>')
     os.makedirs(a.out_dir, exist_ok=True)
@@ -204,7 +220,7 @@ def main():
                 km9 = fa.kmers(chrom, pos, strand, k=9).view('S9').ravel().astype(str)
                 pg, used = givt_p0(givt, km9, p0)
                 p0s['wilsonbg_givt07_'] = pg
-                givt_fp = pd.Series(km9).map(givt[0]).to_numpy(dtype=float)   # as fp_correct.py: any support
+                givt_fp = pd.Series(km9).map(givt_fpc).to_numpy(dtype=float)  # as fp_correct.py: any support
                 bgs.append(('givt07', pg, used))
             for bname, p, used in bgs:
                 bg_summary.append({'run': name, 'background': bname, 'sites': len(d), 'table_used': used.mean(),
@@ -306,7 +322,7 @@ def main():
                 'wilson90_t10', 'wilson95_t7.5', 'wilson95_t10', 'wilson95_t12.5', 'wilson95_t15', 'wilson99_t10',
                 'wilsonbg95_d2.5', 'wilsonbg95_d5', 'wilsonbg95_d7.5', 'wilsonbg95_d10', 'wilsonbg95_t10_d5',
                 'wilsonbg95_t10_d10', 'wilsonbg_givt07_95_d5', 'wilsonbg_givt07_95_d7.5', 'wilsonbg_givt07_95_t10_d5',
-                'wilsonbg_givt07_90_d10', 'wilsonbg_givt07_95_d10', 'fpcorr_pct20']
+                'wilsonbg_givt07_90_d10', 'wilsonbg_givt07_95_d10', 'wilsonbg_givt07_95_d20', 'fpcorr_pct20']
         t = M.groupby('rule')[['called', 'recall', 'precision', 'precision_gain_at_matched_recall']].agg(['mean', 'min', 'max'])
         print(t.reindex([k for k in keep if k in t.index]).round(4).to_string(), file=sys.stderr)
 

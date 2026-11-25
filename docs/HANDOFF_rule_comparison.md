@@ -10,7 +10,9 @@ This file hands over work started in a chat session. Read it fully before runnin
 - Interactive `srun` must be started on its own line; wait for the compute-node prompt before sending more commands.
 - Exported variables do not survive a new allocation or shell: set them again every time (block below).
 - `/scratch` is purged by mtime. Durable storage is `/projects/Genometechlab`. Flag anything purge-sensitive.
-- Never delete or overwrite existing results. Ask before deleting anything, before using GPUs, and before anything destructive.
+- Standing rule (24 Nov): submit CPU-only sbatch jobs and run analyses without asking, as long as they write only to new
+  folders. Still ask before: any GPU job; deleting, moving or overwriting existing files; pushing to GitHub or merging
+  into main; installing or changing packages; editing pipeline code on main. Never delete or overwrite existing results.
 - Numbers in any summary must come from the output tables, never from memory. Say plainly when evidence is weak.
 - Figures: lab style, no grids, no stats boxes (style sheets in `/projects/Genometechlab/matplotlib_stylesheets/`).
 - The user prefers short answers that lead with the result, then commands that can be pasted as they are.
@@ -69,7 +71,7 @@ dependencies and typing_extensions 4.16.0 (over conda's 4.12.2), so that switchi
 |---|---|---|
 | `cmp_ortho.py` | c6f76c9d103958d1a6c5962a3b876399 | truth-set loading, reference check, consensus sets, keys; per-run scoring |
 | `cmp_rules.py` | 9d382e3f33edb0f5a5fa5c5015e3d8e9 | six site rules (pct20, or_k20, or_k20_f5, or_k20_f10, wilson10, bg5) on no-filter pileups: precision, recall, by depth, between runs, negatives. Since 24 Nov `read_pileup(..., fail_as_canonical=True)` reads N_fail (default unchanged). The version that produced every result before that is b12d19af5918e13a734c4eb90f721e24; the chat copy listed here first (cad681c773899abd82773e4291c8352d) is the same code with a final newline |
-| `wilson_sweep.py` | 821efb0a28922d2b139c5ab1f151b7ad | Wilson lower-bound rules vs plain cutoffs: precision at matched recall, recall by truth level, agreement by depth. History: 300ebef5579a7e5c917bac90389d6b02 produced the all-reads and MAPQ-40 sweeps (the chat copy listed here first, d1bd89ad10d27378e62f8c92c83007e2, is the same code with a final newline); 4f269ae6569cf60801eb1e47092d6de6 added the opt-in wilsonbg rules (`--background empirical` and/or `--background givt07:<table>`) and produced `wilsonbg_q40v2_*`; d6775147 adds `--truth-set` (any cmp_ortho set) and `--fail-as-canonical` (depth N_valid + N_fail and occupancy N_mod / (N_valid + N_fail) for every rule, the 20-read floor and the depth bands; for fixed-threshold pileups); 821efb0a adds `fpcorr_pct20` (with givt07: the pipeline's cov20_fpcorr_pct20, percent modified - 100 x the gIVT 0.70 rate >= 20, uncorrectable sites never called, as bin/fp_correct.py + mod_stages.sh). Each step leaves the default tables byte-identical on the mock data sets. Mock test: `tests/mock_wilsonbg.py` (2127036ea1d3c0781dd790c294db169b) |
+| `wilson_sweep.py` | bdfe601bfa2d9bff7df42ed0e4f67f4c | Wilson lower-bound rules vs plain cutoffs: precision at matched recall, recall by truth level, agreement by depth. History: 300ebef5579a7e5c917bac90389d6b02 produced the all-reads and MAPQ-40 sweeps (the chat copy listed here first, d1bd89ad10d27378e62f8c92c83007e2, is the same code with a final newline); 4f269ae6569cf60801eb1e47092d6de6 added the opt-in wilsonbg rules (`--background empirical` and/or `--background givt07:<table>`) and produced `wilsonbg_q40v2_*`; d6775147 adds `--truth-set` (any cmp_ortho set) and `--fail-as-canonical` (depth N_valid + N_fail and occupancy N_mod / (N_valid + N_fail) for every rule, the 20-read floor and the depth bands; for fixed-threshold pileups); 821efb0a adds `fpcorr_pct20` (with givt07: the pipeline's cov20_fpcorr_pct20, percent modified - 100 x the gIVT rate >= 20, uncorrectable sites never called, as bin/fp_correct.py + mod_stages.sh); bdfe601b adds `--fpcorr-threshold` (gIVT column for fpcorr_pct20, the threshold rounded down to 0.01, 0.70 at least) and d = 20 to the wilsonbg offsets. Each step leaves the default tables byte-identical on the mock data sets. Mock test: `tests/mock_wilsonbg.py` (a73ccc91ebebf4c1e50a1fbdbec06801) |
 | `cmp_mappability.py` | f2a86999a385d231d33a7a94e8e37711 | calls by unique-read fraction (MAPQ-40 / all valid reads) and by static BEDs (GIAB); model gap within strata |
 | `cmp_pileup.sh` | 217a84f99b3f9bbfd28177af9bf22fdb | modkit pileups: `THRESH_MODE=fixed THRESHOLDS='A:0 C:0 G:0 T:0'` for no filter, optional `MIN_MAPQ` |
 | `make_short_figures.py` | 5d9bc2afde193ef29962ac54be1b4c6b | figures of the short v6 vs v5.2 report (needs `make_report_figures.py`, 475daa6f72da71b1f074d84830ecd4d7) |
@@ -158,6 +160,37 @@ Outputs: `$OUT/wilsonbg_q40v2_C_d212_v52_m6A_vs_<map>` and `..._fpc_vs_<map>` (n
 - modkit omits nothing at 0.70: the >= 20-read universe equals the no-filter one, and N_valid + N_fail at 0.70 equals the
   no-filter call count at every truth site; 505-525 GLORI sites per run reach 20 reads only through N_fail.
 
+### Occupancy definitions (24 Nov; v5.2, MAPQ >= 40, m6A; GLORI and the three independent maps)
+
+Four definitions, each scored with pct_20, fpcorr_pct20 (gIVT column matching the threshold: 0.70 for 1-2, 0.81 for 3-4)
+and wilsonbg_givt07_95_d20 (lower bound >= p0 + 0.20, pre-specified): (1) no filter; (2) fixed 0.70, fails canonical;
+(3) pipeline thresholds A:0.8105 C:0.834 G:0.9512 T:0.9219, fails dropped (what the pipeline uses now); (4) pipeline
+thresholds, fails canonical. Pileups `$B/pileup064_pipethr_q40` (jobs 12124039-41); sweeps `$OUT/wilsonbg_pthrq40_{dropfail,
+failcanon}_C_d212_v52_m6A_vs_<map>`, `$OUT/wilsonbg_{q40v2,f070q40}_C_d212_v52_m6A_d20_vs_<map>`. Definition 3 here uses
+modkit 0.6.4; on chr1 of 08_01 it matches the pipeline's own modkit 0.5.0 path (N_mod identical, N_valid/N_fail at 99.1%/98.2%
+of sites, pct_20 calls differ at 4 of 171,606 sites).
+
+- The definition matters more than the rule. GLORI, pct_20 (calls, true calls, precision range over runs): (1) 21,560,
+  10,202, 0.445-0.531; (2) 13,366, 9,953, 0.717-0.780; (3) 12,403, 9,506, 0.743-0.795; (4) 12,156, 9,823, 0.786-0.828.
+- (4) beats the current (3): pct_20 precision +3.3 to +4.7 points in each run and 317 more true GLORI calls (3% more);
+  dropping fails leaves 6% fewer sites with >= 20 valid reads (12,423 vs 13,233 GLORI sites). Same order on every
+  independent map (true calls (4) vs (3): SAC 1,835 vs 1,743, CITS 1,554 vs 1,500, CIMS 1,979 vs 1,938).
+- fpcorr_pct20 adds little once calls are thresholded: gain at matched recall on GLORI (1) +5.2, (2) +2.6, (3) +1.1,
+  (4) +0.8 points; on the independent maps under (3) and (4) -0.01 to +0.23.
+- wilsonbg_givt07_95_d20 is strict: GLORI precision 0.746-0.899, recall 0.50-0.56, about 30% fewer true calls than
+  pct_20; gain at matched recall GLORI +0.8 to +2.9, CITS +0.8 to +1.3, CIMS +1.0 to +1.8, SAC -0.24 to +0.10. At >= 100
+  reads it is the most precise of the three under every definition (GLORI (4): 100-299 / 300+ 0.937 / 0.924 vs pct_20
+  0.910 / 0.910); repeat at >= 100 reads (4): 0.939 vs 0.914.
+
+### MOD_STAGES reference-base check (24 Nov; cohort-v2 results, `cohort-v1/results-v2`)
+
+Rows whose reference base on their strand is not the code's base: cov20 0.15-0.54% per code; cov20_pct20 0.2-0.7% (m6A)
+to 7-25% (Ino, Am, Cm, Psi, Um, Gm); cov20_fpcorr_pct20 0 (gIVT cannot correct them). They reach cohort_plots.py only
+through fig 3's table, fig 12's not-correctable share (they are 99.8-99.98% of uncorrectable rows) and fig 13's
+cross-talk and background (0.24-0.56% of target rows). Branch `mods-filter-mismatch`: fp_correct.py --filter_mismatch in
+MOD_STAGES (uncorrected stages rebuilt from the checked rows; raw.bed untouched) and upper-cased base comparison; final
+stage unchanged (checked on ST1932 chr22). Goes in with the next cohort rerun.
+
 ## Open tasks, in order
 
 1. ~~Read the MAPQ-40 Wilson sweep~~: done, see the results above.
@@ -182,6 +215,19 @@ Outputs: `$OUT/wilsonbg_q40v2_C_d212_v52_m6A_vs_<map>` and `..._fpc_vs_<map>` (n
      the tower (4 A100), about 35-45 min per sample per setup. **Ask the user before any GPU job**, and confirm where.
    - Then no-filter MAPQ-40 pileups (`cmp_pileup.sh`) and the same scoring; the scorers use run labels such as
      `A_d212_v6`, so check how each script names and pairs runs before adding new labels.
+   - Done 24 Nov: image `containers/dorado-2.2.0-rna.def` built (job 12124759; `%test` passed: dorado 2.2.0+645d4e4,
+     samtools 1.21, minimap2 2.28-r1209, modkit 0.5.0, 12 model folders). Copies:
+     `/scratch/stein.an/ont-pipeline/containers/dorado-2.2.0-rna.sif` and
+     `/projects/Genometechlab/andrew/containers/dorado-2.2.0-rna.sif`, sha256
+     84c42df869d7a5af7e77d33d835182f0f1bd5da3804c317ad44c5e97084c2351 (both; also in `dorado-2.2.0-rna.sif.sha256`).
+   - Done 24 Nov, model identity (run A used `RNA004_SUP_v6.0.0_v2MODS/` copies: tower bundle
+     `/data/stein_cmp/tower_bundle/models/...`, Explorer copies `/projects/Genometechlab/andrew/custom_models/` and
+     `/scratch/stein.an/tower_bundle/models/`, identical to each other), the image's `/opt/models/SHA256SUMS` file by file:
+     `inosine_m6A_2OmeA@v2` released = pre-release (24 of 24 files identical); `m5C_2OmeC@v2` released != pre-release
+     (21 of 24 files differ: `config.toml` only in `creation_date`, 22 Sep 2026 pre-release vs 3 Nov 2026 released;
+     20 of 23 tensors have other values at the same sizes, i.e. retrained weights, same architecture). `pseU_2OmeU`:
+     run A used v1, the release has v2. For the short report: run A's m6A, inosine and 2'-OMe-A results are the
+     released model's; its m5C and 2'-OMe-C results come from a pre-release m5C model that the release replaced.
 5. **Pipeline (after the user decides):** report the Wilson lower bound as a column in the site tables, and optionally a
    `site_rule` parameter (`pct` default, `wilson` opt-in with target and confidence). Find where the 20% rule is applied
    (`conf/rna.config`, `bin/mod_stages.sh`, `bin/*.py`) and propose a patch before editing.

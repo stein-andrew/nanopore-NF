@@ -211,8 +211,12 @@ def summary(a):
         else:
             seqs[cur].append(line.strip())
     seqs = {c: ''.join(v) for c, v in seqs.items()}
-    table = ws.load_givt(gpath, 'a')
-    print(f'\n(4) gIVT lookup: load_givt kept {len(table[0]):,} rows (code a; table has {len(gt):,}), '
+    table, _ = ws.load_givt(gpath, 'a')
+    want = {0: '0.7', 0.7: '0.7', 0.7155: '0.71', 0.8: '0.8', 0.8105: '0.81', 0.9219: '0.92', 0.999: '0.99'}
+    got_cols = {t: ws.givt_column(t) for t in want}
+    print(f'\n(4) fpcorr column for a threshold (rounded down to 0.01, 0.70 at least): '
+          f'{"as expected" if all(got_cols[t] == f"false_positive_{c}_threshold" for t, c in want.items()) else "WRONG " + str(got_cols)}')
+    print(f'    gIVT lookup: load_givt kept {len(table[0]):,} rows (code a; table has {len(gt):,}), '
           f'largest rate {table[0].max():.3f} (decoy rows are 0.9)')
     out = []
     for run, (d, km, p0) in bg.items():
