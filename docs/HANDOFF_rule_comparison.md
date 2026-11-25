@@ -192,6 +192,27 @@ of sites, pct_20 calls differ at 4 of 171,606 sites).
 (pipeline thresholds, failed calls counted as canonical) + pct_20 (+ fpcorr_pct20, as now). Wilson rules are reporting
 columns only.
 
+### Definition 3 vs 4 beyond m6A (24 Nov; v5.2, MAPQ >= 40, pipeline thresholds)
+
+Sweeps `$OUT/wilsonbg_pthrq40_{dropfail,failcanon}_C_d212_v52_{Inosine,Psi}` (fpcorr column 0.81 for inosine, 0.92 for
+Psi); calls and repeat for the codes without a usable map in `$OUT/summaries/{calls,repeat}_def3_def4_other_mods.tsv`.
+
+- Inosine (SLIC-seq_2of3; 447 sites covered under 3, 569 under 4): pct_20 under 4 makes 789 calls per run, 121 true,
+  precision 0.111-0.185, against 1,337, 110 and 0.053-0.108 under 3. No call at >= 100 reads is a SLIC-seq site under
+  either definition (precision 0 at 100-299 and 300+), as before.
+- Psi (BID∩PRAISE; 117 / 129 sites covered): under 4, 141 calls, 20 true, precision 0.138-0.150, repeat at >= 100
+  reads 0.872; under 3, 355, 21, 0.047-0.073, 0.786. Weak evidence: about 20 true calls.
+- m5C, Am, Cm, Um, Gm (calls only): definition 4 cuts pct_20 calls per run to m5C 2,921 (from 5,296), Am 28 (88),
+  Cm 204 (469), Um 264 (929), Gm 51 (171). Repeat below 100 reads is lower under 4 for every code (e.g. m5C 0.406 vs
+  0.557); at >= 100 reads it is mixed and rests on few calls under 4 (Am 2, Cm 9, Gm 5, Um 19 per run; m5C 167).
+
+Design for the switch, branch `mods-fail-canonical` (afcb562, not merged): `mods_fail_canonical` (default true) rewrites
+the pileup counts before staging (`mod_stages.sh failcanon`: Nvalid_cov += Nfail, percent = Nmod / Nvalid_cov; raw.bed
+keeps modkit's counts) and counts failed calls as canonical in MOD_FEATURES (`mod_feature_counts.sh --fail-canonical`);
+`mods_wilson_columns` (default false) adds column 20 (95% Wilson lower bound) and 21 (givt_d20, using the threshold-matched
+gIVT column) to the gIVT stages and `percent_wilson_lb95`, `givt_d20` to feature_mods.tsv.gz. Checked on ST1932 chr22 and
+a stub run (200 processes, 0 failed); not run on a cohort.
+
 ### MOD_STAGES reference-base check (24 Nov; cohort-v2 results, `cohort-v1/results-v2`)
 
 Rows whose reference base on their strand is not the code's base: cov20 0.15-0.54% per code; cov20_pct20 0.2-0.7% (m6A)
