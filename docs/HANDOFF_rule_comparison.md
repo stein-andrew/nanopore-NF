@@ -69,7 +69,7 @@ dependencies and typing_extensions 4.16.0 (over conda's 4.12.2), so that switchi
 |---|---|---|
 | `cmp_ortho.py` | c6f76c9d103958d1a6c5962a3b876399 | truth-set loading, reference check, consensus sets, keys; per-run scoring |
 | `cmp_rules.py` | 9d382e3f33edb0f5a5fa5c5015e3d8e9 | six site rules (pct20, or_k20, or_k20_f5, or_k20_f10, wilson10, bg5) on no-filter pileups: precision, recall, by depth, between runs, negatives. Since 24 Nov `read_pileup(..., fail_as_canonical=True)` reads N_fail (default unchanged). The version that produced every result before that is b12d19af5918e13a734c4eb90f721e24; the chat copy listed here first (cad681c773899abd82773e4291c8352d) is the same code with a final newline |
-| `wilson_sweep.py` | d677514780bead36294d6d9808287f9d | Wilson lower-bound rules vs plain cutoffs: precision at matched recall, recall by truth level, agreement by depth. History: 300ebef5579a7e5c917bac90389d6b02 produced the all-reads and MAPQ-40 sweeps (the chat copy listed here first, d1bd89ad10d27378e62f8c92c83007e2, is the same code with a final newline); 4f269ae6569cf60801eb1e47092d6de6 added the opt-in wilsonbg rules (`--background empirical` and/or `--background givt07:<table>`) and produced `wilsonbg_q40v2_*`; d6775147 adds `--truth-set` (any cmp_ortho set) and `--fail-as-canonical` (depth N_valid + N_fail and occupancy N_mod / (N_valid + N_fail) for every rule, the 20-read floor and the depth bands; for fixed-threshold pileups). Each step leaves the default tables byte-identical on the mock data sets. Mock test: `tests/mock_wilsonbg.py` (27acf031848f390b8a90568646f72673) |
+| `wilson_sweep.py` | 821efb0a28922d2b139c5ab1f151b7ad | Wilson lower-bound rules vs plain cutoffs: precision at matched recall, recall by truth level, agreement by depth. History: 300ebef5579a7e5c917bac90389d6b02 produced the all-reads and MAPQ-40 sweeps (the chat copy listed here first, d1bd89ad10d27378e62f8c92c83007e2, is the same code with a final newline); 4f269ae6569cf60801eb1e47092d6de6 added the opt-in wilsonbg rules (`--background empirical` and/or `--background givt07:<table>`) and produced `wilsonbg_q40v2_*`; d6775147 adds `--truth-set` (any cmp_ortho set) and `--fail-as-canonical` (depth N_valid + N_fail and occupancy N_mod / (N_valid + N_fail) for every rule, the 20-read floor and the depth bands; for fixed-threshold pileups); 821efb0a adds `fpcorr_pct20` (with givt07: the pipeline's cov20_fpcorr_pct20, percent modified - 100 x the gIVT 0.70 rate >= 20, uncorrectable sites never called, as bin/fp_correct.py + mod_stages.sh). Each step leaves the default tables byte-identical on the mock data sets. Mock test: `tests/mock_wilsonbg.py` (2127036ea1d3c0781dd790c294db169b) |
 | `cmp_mappability.py` | f2a86999a385d231d33a7a94e8e37711 | calls by unique-read fraction (MAPQ-40 / all valid reads) and by static BEDs (GIAB); model gap within strata |
 | `cmp_pileup.sh` | 217a84f99b3f9bbfd28177af9bf22fdb | modkit pileups: `THRESH_MODE=fixed THRESHOLDS='A:0 C:0 G:0 T:0'` for no filter, optional `MIN_MAPQ` |
 | `make_short_figures.py` | 5d9bc2afde193ef29962ac54be1b4c6b | figures of the short v6 vs v5.2 report (needs `make_report_figures.py`, 475daa6f72da71b1f074d84830ecd4d7) |
@@ -134,6 +134,29 @@ and test it on 0.70-threshold pileups, where the background definition matches t
   `wilsonbg_givt07_95_d10`: precision +7.1 to +8.2, recall +0.2 to +1.0. But the gain is all below 50 reads: precision at
   100-299 reads 0.44 vs 0.53 and at 300+ 0.24 vs 0.39 (pct20), and calls at >= 100 reads repeat less (0.729 vs 0.768,
   lower in every pair; below 100 reads 0.694 vs 0.667).
+
+### gIVT follow-ups (24 Nov; v5.2, MAPQ >= 40, m6A; GLORI and the independent maps m6A-SAC-seq, miCLIP-CITS, miCLIP-CIMS)
+
+Outputs: `$OUT/wilsonbg_q40v2_C_d212_v52_m6A_vs_<map>` and `..._fpc_vs_<map>` (no-filter pileups);
+`$OUT/wilsonbg_f070q40_C_d212_v52_m6A_vs_<map>` and `..._fpc_vs_<map>` (fixed-0.70 pileups `$B/pileup064_fixed070_q40`,
+`--fail-as-canonical`; jobs 12111072-74). `m6A_2+methods` counts GLORI as one of its methods, so it is not independent.
+
+- Independent maps: the givt07 rules beat pct20 in every run on every map, by less in points because pct20's precision
+  against these maps is 0.07-0.11. `givt07_90_d10` passes the pre-registered test on all three; `givt07_95_d10` on both
+  miCLIP maps but not SAC-seq (recall -0.04, -0.23, +0.13). The deep-band weakness replicates on every map.
+- Against the pipeline's correction: `fpcorr_pct20` already gains most of what gIVT adds over pct20 (GLORI, no filter:
+  precision +6.9 to +7.9, recall -1.4; fixed 0.70: +3.3 to +4.2, about -1.4). `givt07_95_d10` matches or beats fpcorr's
+  precision with 1.4-2.4 points more recall in every run on GLORI and miCLIP-CIMS (CITS: one run -0.05 precision);
+  SAC-seq is a wash. The Wilson 95% gIVT curve at fpcorr's recall: GLORI +2.4 to +3.1 points (no filter), +0.9 to +1.9
+  (fixed 0.70).
+- The >= 100-read weakness stays when the background matches (fixed 0.70, fails canonical; GLORI, 100-299 / 300+ reads):
+  pct20 0.840 / 0.809, fpcorr 0.873 / 0.848, givt07_95_d10 0.802 / 0.689 (262 calls at 300+ vs 156 for pct20); repeat at
+  >= 100 reads 0.883, 0.892, 0.862. Same on every independent map.
+- Occupancy definition: on the fixed-0.70 pileups pct20's GLORI precision is 0.754 / 0.780 / 0.717 (no filter: 0.468 /
+  0.531 / 0.445) for 1.7-2.1 points less recall; calls in 08_01 drop from 19,735 to 11,968 with the same 12,049 GLORI
+  sites covered.
+- modkit omits nothing at 0.70: the >= 20-read universe equals the no-filter one, and N_valid + N_fail at 0.70 equals the
+  no-filter call count at every truth site; 505-525 GLORI sites per run reach 20 reads only through N_fail.
 
 ## Open tasks, in order
 

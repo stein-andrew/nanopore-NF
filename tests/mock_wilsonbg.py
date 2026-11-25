@@ -144,6 +144,10 @@ def summary(a):
     print(f'(1) zero background: {len(pairs_) - len(bad)}/{len(pairs_)} wilsonbg rules identical to the Wilson rule '
           f'they reduce to{"; MISMATCH " + str(bad) if bad else ""}; rules(d) without p0 has no wilsonbg: '
           f'{not any(k.startswith("wilsonbg") for k in ws.rules(d))}')
+    z, nan = ws.rules(d, None, np.zeros(len(d))), ws.rules(d, None, np.full(len(d), np.nan))
+    print(f'    fpcorr_pct20: gIVT rate 0 gives pct_20 exactly: {np.array_equal(z["fpcorr_pct20"], z["pct_20"])}; '
+          f'NaN rate (uncorrectable) is never called: {not nan["fpcorr_pct20"].any()}; absent without givt_fp: '
+          f'{"fpcorr_pct20" not in ws.rules(d)}')
 
     # (1b) fail_as_canonical: depth N_valid + N_fail, occupancy N_mod / (N_valid + N_fail)
     rows = [('chr1', 100, 'a', 20, 25.0, 5, 20),      # default: 20 reads, 25%; fail as canonical: 40 reads, 12.5%

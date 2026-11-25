@@ -25,6 +25,9 @@ Every rule sees positions with >= 20 valid reads (masked loci and alt/decoy cont
                      9-mer is missing. It is a lower bound on no-filter background: the table counts calls with
                      probability >= 0.70 as modified and everything else as canonical, over reference-matched 9-mers.
                      Valid only for the model the table was built from (the GM12878 table: v5.2, Dorado 1.0.0).
+  fpcorr_pct20       (with givt07) the pipeline's cov20_fpcorr_pct20: percent modified - 100 * the gIVT 0.70 rate >= 20
+                     (bin/fp_correct.py + mod_stages.sh fpcorr): any 9-mer in the table is corrected, whatever its
+                     support; sites the table cannot correct are never called, as in the pipeline (no fallback)
 --background can be given more than once. background_summary.tsv: per run and background, median background at DRACH
 and other sites (5-mer on the RNA strand; DRACH is m6A's motif, the split is reported for every modification).
 --fail-as-canonical (for pileups at a fixed threshold, e.g. 0.70): depth N_valid + N_fail and occupancy
@@ -67,9 +70,10 @@ DEPTH_BINS = [20, 50, 100, 300, np.inf]
 DEPTH_LABELS = ['20-49', '50-99', '100-299', '300+']
 
 
-def rules(d, p0s=None):
+def rules(d, p0s=None, givt_fp=None):
     """p0s: {rule prefix: per-site background rate (fraction)}, e.g. {'wilsonbg': empirical, 'wilsonbg_givt07_': gIVT};
-    None leaves out the background families."""
+    None leaves out the background families. givt_fp: per-site gIVT rate, NaN where the table cannot correct
+    (adds fpcorr_pct20)."""
     pct, k, n = d['pct'].to_numpy(), d['nmod'].to_numpy(), d['nvalid'].to_numpy()
     out = {}
     for c in PCT:
@@ -87,6 +91,9 @@ def rules(d, p0s=None):
         for conf in T10_CONF:
             for dl in T10_DELTAS:
                 out[f'{pre}{conf}_t10_d{dl:g}'] = lbs[conf] >= np.maximum(0.10, p0 + dl / 100)
+    if givt_fp is not None:
+        with np.errstate(invalid='ignore'):
+            out['fpcorr_pct20'] = pct - 100 * givt_fp >= 20          # NaN rate: False, as mod_stages.sh drops it
     return out
 
 
@@ -182,7 +189,7 @@ def main():
         lbin = pd.cut(tl, LEVEL_BINS, right=False, labels=LEVEL_LABELS)
         dbin = pd.cut(d['nvalid'].to_numpy(), DEPTH_BINS, right=False, labels=DEPTH_LABELS)
         ncov = int(in_t.sum())
-        p0s = {}
+        p0s, givt_fp = {}, None
         if fa is not None:
             chrom, pos, strand = d['chrom'].to_numpy(), d['pos'].to_numpy(), d['strand'].to_numpy()
             km = fa.kmers(chrom, pos, strand)
@@ -194,8 +201,10 @@ def main():
             if use_emp:
                 p0s['wilsonbg'] = p0
             if givt is not None:
-                pg, used = givt_p0(givt, fa.kmers(chrom, pos, strand, k=9).view('S9').ravel().astype(str), p0)
+                km9 = fa.kmers(chrom, pos, strand, k=9).view('S9').ravel().astype(str)
+                pg, used = givt_p0(givt, km9, p0)
                 p0s['wilsonbg_givt07_'] = pg
+                givt_fp = pd.Series(km9).map(givt[0]).to_numpy(dtype=float)   # as fp_correct.py: any support
                 bgs.append(('givt07', pg, used))
             for bname, p, used in bgs:
                 bg_summary.append({'run': name, 'background': bname, 'sites': len(d), 'table_used': used.mean(),
@@ -205,7 +214,7 @@ def main():
                 print(f'{name}: {bname} background median {100 * np.median(p):.2f}%, max {100 * p.max():.2f}%; DRACH '
                       f'{100 * bg_summary[-1]["median_drach"]:.2f}%, other {100 * bg_summary[-1]["median_other"]:.2f}%'
                       + (f'; table used at {used.mean():.2%} of sites' if bname != 'empirical' else ''), file=sys.stderr)
-        calls = rules(d, p0s)
+        calls = rules(d, p0s, givt_fp)
         for r, c in calls.items():
             sweep.append({'run': name, 'rule': r, 'family': family(r), 'called': int(c.sum()),
                           'precision': in_t[c].mean() if c.any() else np.nan, 'recall': in_t[c].sum() / ncov if ncov else np.nan,
@@ -263,12 +272,14 @@ def main():
              'wilsonbg99': ('#006d2c', '^', 'Wilson 99% over 5-mer background'),
              'wilsonbg95_t10': ('#31a354', 'v', 'Wilson 95% >= max(10%, 5-mer background + d)'),
              'wilsonbg_givt07_95': ('#756bb1', '^', 'Wilson 95% over gIVT 0.7 background'),
-             'wilsonbg_givt07_95_t10': ('#756bb1', 'v', 'Wilson 95% >= max(10%, gIVT 0.7 background + d)')}
+             'wilsonbg_givt07_95_t10': ('#756bb1', 'v', 'Wilson 95% >= max(10%, gIVT 0.7 background + d)'),
+             'fpcorr': ('#e6550d', 'X', 'pipeline gIVT correction (pct - fp >= 20)')}
+    single = ('depth floor', 'fpcorr')                                # one point or two, not curves
     for fam, (col, mk, lab) in style.items():
         g = mean[mean['family'] == fam].sort_values('recall')
         if g.empty:
             continue
-        ax.plot(g['recall'], g['precision'], linestyle='-' if fam != 'depth floor' else 'none', marker=mk, ms=3.5, color=col, lw=1, label=lab)
+        ax.plot(g['recall'], g['precision'], linestyle='none' if fam in single else '-', marker=mk, ms=3.5, color=col, lw=1, label=lab)
     for r, lab in (('pct_20', 'pct 20'), ('wilson95_t10', 'wilson10')):
         row = mean[mean['rule'] == r]
         if len(row):
@@ -283,7 +294,7 @@ def main():
         g = mm[mm['family'] == fam].sort_values('recall')
         if g.empty:
             continue
-        ax.plot(g['recall'], 100 * g['precision_gain_at_matched_recall'], linestyle='-' if fam != 'depth floor' else 'none', marker=mk,
+        ax.plot(g['recall'], 100 * g['precision_gain_at_matched_recall'], linestyle='none' if fam in single else '-', marker=mk,
                 ms=3.5, color=col, lw=1, label=lab)
     ax.axhline(0, color='k', lw=0.6)
     ax.set_xlabel('recall'); ax.set_ylabel('precision gain over plain cutoffs\nat the same recall (points)')
@@ -294,7 +305,8 @@ def main():
         keep = ['pct_15', 'pct_17.5', 'pct_20', 'pct_22.5', 'pct_25', 'pct_20_min30', 'pct_20_min50',
                 'wilson90_t10', 'wilson95_t7.5', 'wilson95_t10', 'wilson95_t12.5', 'wilson95_t15', 'wilson99_t10',
                 'wilsonbg95_d2.5', 'wilsonbg95_d5', 'wilsonbg95_d7.5', 'wilsonbg95_d10', 'wilsonbg95_t10_d5',
-                'wilsonbg95_t10_d10', 'wilsonbg_givt07_95_d5', 'wilsonbg_givt07_95_d7.5', 'wilsonbg_givt07_95_t10_d5']
+                'wilsonbg95_t10_d10', 'wilsonbg_givt07_95_d5', 'wilsonbg_givt07_95_d7.5', 'wilsonbg_givt07_95_t10_d5',
+                'wilsonbg_givt07_90_d10', 'wilsonbg_givt07_95_d10', 'fpcorr_pct20']
         t = M.groupby('rule')[['called', 'recall', 'precision', 'precision_gain_at_matched_recall']].agg(['mean', 'min', 'max'])
         print(t.reindex([k for k in keep if k in t.index]).round(4).to_string(), file=sys.stderr)
 
