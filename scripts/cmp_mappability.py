@@ -23,9 +23,28 @@ map is there), calls, precision (a lower bound everywhere, and lower still where
 median occupancy shift from dropping MAPQ < 40 reads at called sites. Because map blindness lowers every model's
 precision alike, compare models WITHIN a stratum: gaps.tsv has first --model minus second --model per stratum.
 Outputs in --out-dir: strata.tsv, gaps.tsv, mappability.pdf/png. Needs cmp_rules.py and cmp_ortho.py alongside.
+
+Options added 27 Nov (without them every output is byte-identical to the version before, md5 f2a86999):
+  --partition NAME=BED  a labelled BED (chrom, start, end, label[, score, strand]; no strand or '.' = both strands)
+                        that gives each site one class, e.g. transcript regions from make_transcript_partition.py.
+                        Overlapping intervals on a strand are an error; sites in no interval are 'unlabelled'. A
+                        '#labels<TAB>a,b,...' header line sets the figure's order.
+  --truth-set SET       any cmp_ortho set of the modification (default: its main set, cmp_rules.TRUTH).
+  --calls-all-dir, --calls-q40-dir
+                        the pileups the calls come from (both or neither; default --all-dir and --q40-dir), e.g. the
+                        fixed-0.70 pair for definition 2. The unique-read fraction always comes from --all-dir and
+                        --q40-dir, which must then be the no-filter pair (fixed threshold 0, checked in their
+                        <sample>.summary.txt, as is MAPQ >= 40 for the q40 dirs only); a site with no valid read in
+                        the no-filter all-reads pileup goes in stratum 'no no-filter coverage'.
+  --fail-as-canonical   for the calls pileups: depth N_valid + N_fail, percent modified 100 N_mod / (N_valid + N_fail)
+                        (cmp_rules.read_pileup), for the --min-valid floor, both read sets and the occupancy shift.
+  --calls-threshold X   stop unless every calls pileup's summary.txt shows fixed threshold X for A, C, G and T.
+  With any of these, settings.tsv records the settings.
 """
 import argparse
+import gzip
 import os
+import re
 import sys
 
 import matplotlib
@@ -40,6 +59,7 @@ import cmp_rules as cr  # noqa: E402
 
 U_BINS = [-0.01, 0.5, 0.95, 1.01]
 U_LABELS = ['mostly multimapped (<50% unique)', 'partly multimapped (50-95%)', 'unique (>=95%)']
+NO_NF = 'no no-filter coverage'
 
 
 def in_intervals(chrom, start0, bed):
@@ -62,6 +82,71 @@ def read_bed3(path):
                        dtype={'chrom': str})
 
 
+def read_partition(path):
+    """labelled BED -> ({(chrom, strand): (starts, ends, labels)}, display order or None). One class per position:
+    overlapping intervals on a strand ('.' counts for both) are an error."""
+    order = None
+    with (gzip.open(path, 'rt') if path.endswith('.gz') else open(path)) as f:
+        for line in f:
+            if not line.startswith('#'):
+                break
+            if line.startswith('#labels\t'):
+                order = line.rstrip('\n').split('\t', 1)[1].split(',')
+    b = pd.read_csv(path, sep='\t', header=None, comment='#', dtype={0: str, 3: str})
+    if b.shape[1] < 4:
+        sys.exit(f'--partition {path}: needs a label in column 4')
+    strand = b[5].astype(str).to_numpy() if b.shape[1] >= 6 else np.full(len(b), '.', dtype=object)
+    bad = sorted(set(strand) - {'+', '-', '.'})
+    if bad:
+        sys.exit(f'--partition {path}: strand values {bad}')
+    part = {}
+    for s in '+-':
+        x = b[(strand == s) | (strand == '.')]
+        for c, iv in x.groupby(0):
+            iv = iv.sort_values(1)
+            st, en = iv[1].to_numpy(np.int64), iv[2].to_numpy(np.int64)
+            if (st[1:] < en[:-1]).any():
+                k = int(np.flatnonzero(st[1:] < en[:-1])[0])
+                sys.exit(f'--partition {path}: overlapping intervals on {c} {s} at {st[k]}-{en[k]} and '
+                         f'{st[k + 1]}-{en[k + 1]}: one class per site is required')
+            part[(c, s)] = (st, en, iv[3].to_numpy(dtype=object))
+    return part, order
+
+
+def label_sites(chrom, strand, start0, part):
+    """each site's class in a partition (0-based start, strand-aware); 'unlabelled' where no interval holds it."""
+    lab = np.full(len(chrom), 'unlabelled', dtype=object)
+    for (c, s), sel in pd.DataFrame({'c': chrom, 's': strand}).groupby(['c', 's']).indices.items():
+        if (c, s) not in part:
+            continue
+        st, en, lb = part[(c, s)]
+        z = start0[sel]
+        j = np.searchsorted(st, z, side='right') - 1
+        ok = (j >= 0) & (z < en[np.clip(j, 0, None)])
+        lab[sel[ok]] = lb[j[ok]]
+    return lab
+
+
+def pileup_settings(bed):
+    """(thresholds {base: value} or None if not fixed, MAPQ floor or None) from <prefix>.summary.txt of cmp_pileup.sh."""
+    p = bed[:-4] + '.summary.txt' if bed.endswith('.bed') else bed + '.summary.txt'
+    if not os.path.exists(p):
+        sys.exit(f'{p} missing: cannot check how {bed} was made')
+    txt = open(p).read()
+    m = re.search(r'thresholds \(fixed[^)]*\): (.*?) in ', txt)
+    th = dict(x.split(':') for x in m.group(1).split()) if m else None
+    q = re.search(r'keeping primary alignments with MAPQ >= (\d+)', txt)
+    return ({k: float(v) for k, v in th.items()} if th else None), (int(q.group(1)) if q else None)
+
+
+def check_pileup(bed, want_th, want_mapq, what):
+    th, mapq = pileup_settings(bed)
+    if th is None or set(th) != set('ACGT') or any(abs(v - want_th) > 1e-9 for v in th.values()):
+        sys.exit(f'{bed}: {what} needs fixed threshold {want_th:g} for A, C, G, T; its summary says {th}')
+    if mapq != want_mapq:
+        sys.exit(f'{bed}: {what} needs MAPQ filter {want_mapq}; its summary says {mapq}')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--mod', required=True, choices=sorted(cr.TRUTH))
@@ -71,6 +156,15 @@ def main():
     ap.add_argument('--all-dir', required=True)
     ap.add_argument('--q40-dir', required=True)
     ap.add_argument('--strata', action='append', default=[], metavar='NAME=BED')
+    ap.add_argument('--partition', action='append', default=[], metavar='NAME=BED',
+                    help='labelled BED, one class per site (strand-aware when column 6 is + or -)')
+    ap.add_argument('--truth-set', help="cmp_ortho set to score against (default: the modification's main set)")
+    ap.add_argument('--calls-all-dir', help='pileups the all-reads calls come from (default --all-dir)')
+    ap.add_argument('--calls-q40-dir', help='pileups the MAPQ >= 40 calls come from (default --q40-dir)')
+    ap.add_argument('--fail-as-canonical', action='store_true',
+                    help='calls pileups: depth N_valid + N_fail, occupancy N_mod / (N_valid + N_fail)')
+    ap.add_argument('--calls-threshold', type=float,
+                    help='check that the calls pileups were made at this fixed threshold for every base')
     ap.add_argument('--ortho-dir')
     ap.add_argument('--fasta', required=True)
     ap.add_argument('--truth-tsv', help='testing: chrom, pos, strand')
@@ -80,10 +174,15 @@ def main():
     ap.add_argument('--pct', type=float, default=20)
     ap.add_argument('--out-dir', required=True)
     a = ap.parse_args()
+    if bool(a.calls_all_dir) != bool(a.calls_q40_dir):
+        ap.error('--calls-all-dir and --calls-q40-dir go together')
+    new_calls = bool(a.calls_all_dir or a.fail_as_canonical or a.calls_threshold is not None)
+    calls_all, calls_q40 = a.calls_all_dir or a.all_dir, a.calls_q40_dir or a.q40_dir
     os.makedirs(a.out_dir, exist_ok=True)
     models = cr.pairs(a.model)
     strata = [(n, read_bed3(p)) for n, p in cr.pairs(a.strata)]
-    st = cr.TRUTH[a.mod]
+    partitions = [(n, *read_partition(p)) for n, p in cr.pairs(a.partition)]
+    st = a.truth_set or cr.TRUTH[a.mod]
     if a.truth_tsv:
         truth = pd.read_csv(a.truth_tsv, sep='\t')
     else:
@@ -91,7 +190,10 @@ def main():
         listed = listed[listed['mod'] == a.mod]
         truth, _ = co.check_against_reference(listed, co.Fasta(a.fasta))
         truth = co.add_consensus(truth)
+        sets = sorted(truth['set'].unique())
         truth = truth[truth['set'] == st]
+        if not len(truth):
+            sys.exit(f'no {a.mod} sites in truth set {st}; sets: {", ".join(sets)}')
     mask = read_bed3(a.mask_bed) if a.mask_bed else None
     ids = {}
     for line in open(a.fasta + '.fai'):
@@ -102,20 +204,45 @@ def main():
     rows = []
     for sample in a.sample:
         for label, run in models:
-            d = cr.read_pileup(f'{a.all_dir}/{run}/{sample}.bed', code, a.min_valid, a.contig_regex, mask)
-            q = cr.read_pileup(f'{a.q40_dir}/{run}/{sample}.bed', code, 1, a.contig_regex, mask)
+            if new_calls:
+                for path, th, mq, what in [(f'{a.all_dir}/{run}/{sample}.bed', 0, None, 'the no-filter all-reads pileup'),
+                                           (f'{a.q40_dir}/{run}/{sample}.bed', 0, 40, 'the no-filter MAPQ-40 pileup')]:
+                    check_pileup(path, th, mq, what)
+                if a.calls_threshold is not None:
+                    check_pileup(f'{calls_all}/{run}/{sample}.bed', a.calls_threshold, None, 'the all-reads calls pileup')
+                    check_pileup(f'{calls_q40}/{run}/{sample}.bed', a.calls_threshold, 40, 'the MAPQ-40 calls pileup')
+            d = cr.read_pileup(f'{calls_all}/{run}/{sample}.bed', code, a.min_valid, a.contig_regex, mask,
+                               a.fail_as_canonical)
+            q = cr.read_pileup(f'{calls_q40}/{run}/{sample}.bed', code, 1, a.contig_regex, mask, a.fail_as_canonical)
             d['key'] = co.keys(d['chrom'], d['pos'].to_numpy(), d['strand'], ids)
             q['key'] = co.keys(q['chrom'], q['pos'].to_numpy(), q['strand'], ids)
             q = q.drop_duplicates('key').set_index('key')
             d['nvalid_q'] = q['nvalid'].reindex(d['key']).fillna(0).to_numpy()
             d['pct_q'] = q['pct'].reindex(d['key']).to_numpy()
-            d['ufrac'] = (d['nvalid_q'] / d['nvalid']).clip(upper=1)
+            if not new_calls:
+                d['ufrac'] = (d['nvalid_q'] / d['nvalid']).clip(upper=1)
+            else:                                   # unique-read fraction from the no-filter pair, at the calls' sites
+                n_all = cr.read_pileup(f'{a.all_dir}/{run}/{sample}.bed', code, 1, a.contig_regex, mask)
+                n_q = cr.read_pileup(f'{a.q40_dir}/{run}/{sample}.bed', code, 1, a.contig_regex, mask)
+                n_all = n_all.set_index(co.keys(n_all['chrom'], n_all['pos'].to_numpy(), n_all['strand'], ids))['nvalid']
+                n_q = n_q.set_index(co.keys(n_q['chrom'], n_q['pos'].to_numpy(), n_q['strand'], ids))['nvalid']
+                n_all, n_q = n_all[~n_all.index.duplicated()], n_q[~n_q.index.duplicated()]
+                na = n_all.reindex(d['key']).to_numpy(dtype=float)
+                nq = n_q.reindex(d['key']).fillna(0).to_numpy(dtype=float)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    d['ufrac'] = np.clip(np.where(na > 0, nq / na, np.nan), None, 1)
+                del n_all, n_q
             d['in_truth'] = np.isin(d['key'], tk)
             d['u_stratum'] = pd.cut(d['ufrac'], U_BINS, labels=U_LABELS).astype(str)
+            if new_calls:
+                d.loc[d['ufrac'].isna(), 'u_stratum'] = NO_NF
             groupings = [('unique-read fraction', d['u_stratum'].to_numpy())]
             for name, bed in strata:
                 inside = in_intervals(d['chrom'].to_numpy(), d['start'].to_numpy(), bed)
                 groupings.append((name, np.where(inside, f'in {name}', f'outside {name}')))
+            for name, part, _ in partitions:
+                groupings.append((name, label_sites(d['chrom'].to_numpy(), d['strand'].to_numpy(),
+                                                    d['start'].to_numpy(), part)))
             groupings.append(('all sites', np.full(len(d), 'all sites', dtype=object)))
             calls = {'all reads': (np.ones(len(d), bool), d['pct'].to_numpy() >= a.pct),
                      'MAPQ >= 40': (d['nvalid_q'].to_numpy() >= a.min_valid, d['pct_q'].fillna(-1).to_numpy() >= a.pct)}
@@ -137,6 +264,15 @@ def main():
                   + ', '.join(f'{k.split(" (")[0]} {v:,}' for k, v in d['u_stratum'].value_counts().items()), file=sys.stderr)
     S = pd.DataFrame(rows)
     S.to_csv(f'{a.out_dir}/strata.tsv', sep='\t', index=False, float_format='%.4g')
+    if new_calls or a.partition or a.truth_set:
+        cfg = [('mod', a.mod), ('truth_set', 'from --truth-tsv' if a.truth_tsv else st),
+               ('strata_all_dir', a.all_dir), ('strata_q40_dir', a.q40_dir), ('calls_all_dir', calls_all),
+               ('calls_q40_dir', calls_q40), ('fail_as_canonical', a.fail_as_canonical),
+               ('calls_threshold', '' if a.calls_threshold is None else a.calls_threshold),
+               ('min_valid', a.min_valid), ('pct', a.pct), ('mask_bed', a.mask_bed or ''),
+               ('contig_regex', a.contig_regex)] + [(f'strata:{n}', p) for n, p in cr.pairs(a.strata)] \
+            + [(f'partition:{n}', p) for n, p in cr.pairs(a.partition)] + [(f'model:{n}', r) for n, r in models]
+        pd.DataFrame(cfg, columns=['setting', 'value']).to_csv(f'{a.out_dir}/settings.tsv', sep='\t', index=False)
 
     (m1, _), (m2, _) = models[0], models[1]
     k = ['sample', 'reads', 'grouping', 'stratum']
@@ -147,11 +283,19 @@ def main():
     G.to_csv(f'{a.out_dir}/gaps.tsv', sep='\t', index=False, float_format='%.4g')
 
     groups = [x for x in S['grouping'].unique() if x != 'all sites']
+    orders = {'unique-read fraction': U_LABELS + [NO_NF]}
+    for name, _, order in partitions:
+        if order:
+            orders[name] = order + ['unlabelled']
+    calls_desc = ''
+    if new_calls:
+        calls_desc = (f', calls at fixed {a.calls_threshold:g}' if a.calls_threshold is not None else ', calls') \
+            + (' (fails canonical)' if a.fail_as_canonical else '')
     fig, axes = plt.subplots(len(groups), 2, figsize=(8.5, 2.6 * len(groups)), layout='constrained', squeeze=False)
     cols = {m1: '#d95f02', m2: '#1b9e77'}
     for i, gname in enumerate(groups):
         sub = S[(S['grouping'] == gname)]
-        order = [s for s in (U_LABELS if gname == 'unique-read fraction' else sorted(sub['stratum'].unique())) if s in set(sub['stratum'])]
+        order = [s for s in (orders.get(gname) or sorted(sub['stratum'].unique())) if s in set(sub['stratum'])]
         ax = axes[i, 0]
         w = 0.2
         for j, (mdl, reads) in enumerate([(m1, 'all reads'), (m1, 'MAPQ >= 40'), (m2, 'all reads'), (m2, 'MAPQ >= 40')]):
@@ -162,7 +306,7 @@ def main():
                         fmt='none', ecolor='k', lw=0.5)
         dens = sub[(sub['model'] == m1) & (sub['reads'] == 'all reads')].groupby('stratum')['truth_per_1000_covered'].mean().reindex(order)
         ax.set_xticks(np.arange(len(order))); ax.set_xticklabels([f'{s.split(" (")[0]}\n{t:.1f} truth/1k' for s, t in zip(order, dens)], fontsize=6.5)
-        ax.set_ylabel('precision'); ax.set_title(f'{a.mod} against {st}: by {gname}', fontsize=8)
+        ax.set_ylabel('precision'); ax.set_title(f'{a.mod} against {st}{calls_desc}: by {gname}', fontsize=8)
         if i == 0:
             ax.legend(frameon=False, fontsize=6)
         ax = axes[i, 1]
