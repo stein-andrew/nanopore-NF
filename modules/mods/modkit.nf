@@ -19,6 +19,13 @@
 //                --filter_mismatch; they are calls at SNVs and mismatches, and gIVT cannot
 //                correct them anyway); raw.bed keeps them, and mod_stages.tsv counts the
 //                coverage stage before the check (cov<C>_all).
+//                params.mods_fail_canonical (default true): calls that failed their threshold
+//                count as canonical before any stage (Nvalid_cov += Nfail; occupancy = Nmod /
+//                (Nvalid_cov + Nfail)), the definition the gIVT tables use and the one that
+//                scored best (docs/HANDOFF_rule_comparison.md, occupancy definitions); raw.bed
+//                keeps modkit's own counts. params.mods_wilson_columns (default false) adds two
+//                reporting columns to the gIVT stages: 20 = 95% Wilson lower bound of the
+//                occupancy, 21 = givt_d20 (that bound >= the gIVT rate + 20 points).
 //
 // The correction is bin/fp_correct.py: a vectorized drop-in for gIVT's IVT_fp_correction.py
 // (github.com/genometechlab/gIVT, kept in bin/ for comparison) with the same arguments and
@@ -98,9 +105,15 @@ process MOD_STAGES {
     min_cov = params.mods_min_coverage
     min_pct = params.mods_min_percent
     def cov = "${prefix}.cov${min_cov}"
+    def fc = params.mods_fail_canonical.toString() == 'true'      // true, or 'true' from the command line
+    def staged = fc ? "${prefix}.failcanon.bed" : "${raw}"
+    def failcanon = fc ?
+        "mod_stages.sh failcanon ${raw} ${staged}      # failed calls count as canonical; not published" : ''
+    def wilson = params.mods_wilson_columns.toString() == 'true' ? '--wilson_columns' : ''
     """
     check_rows.sh ${raw} ${raw_rows} 18      # the pileup arrived whole (bin/validated_pileup.sh)
-    mod_stages.sh coverage ${raw} ${min_cov} ${min_pct} ${prefix}.all     # before the base check; not published
+    ${failcanon}
+    mod_stages.sh coverage ${staged} ${min_cov} ${min_pct} ${prefix}.all     # before the base check; not published
 
     # --filter_mismatch drops rows whose reference base on their strand is not the modification's
     # base (e.g. Psi calls on U reads where the reference has C); raw.bed keeps them. An empty
@@ -109,7 +122,7 @@ process MOD_STAGES {
     export POLARS_MAX_THREADS=${task.cpus}
     if [[ -s ${prefix}.all.cov${min_cov}.bed ]]; then
         fp_correct.py -m ${prefix}.all.cov${min_cov}.bed -ref ${fasta} -e ${error_table} \\
-            -mt \$(cat ${givt_flags}) --filter_mismatch -o ${cov}_fpcorr.bed > ${prefix}.fpcorr.log 2>&1
+            -mt \$(cat ${givt_flags}) --filter_mismatch ${wilson} -o ${cov}_fpcorr.bed > ${prefix}.fpcorr.log 2>&1
     else
         : > ${cov}_fpcorr.bed
         echo "no rows with Nvalid_cov >= ${min_cov}: nothing to correct" > ${prefix}.fpcorr.log

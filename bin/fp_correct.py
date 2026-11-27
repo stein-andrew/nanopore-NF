@@ -3,7 +3,12 @@
 
     fp_correct.py -m S.cov20.bed -ref genome.fa -e errortable.tsv.gz \\
         -mt a,0.81 m,0.80 ... -o S.cov20_fpcorr.bed \\
-        [--valid_only | --filter_kmer --filter_mismatch] [-n MIN_COV]
+        [--valid_only | --filter_kmer --filter_mismatch] [-n MIN_COV] [--wilson_columns]
+
+--wilson_columns (not in gIVT) adds two columns after column 19: 20 = the 95% Wilson lower
+bound of Nmod / Nvalid_cov (columns 12 and 10), in percent; 21 = givt_d20, 1 when that lower
+bound is >= 100 * fp + 20 (fp: the same rate as column 19's), 0 when not, empty where gIVT
+has no rate. Without the flag the output is gIVT's 19 columns.
 
 Same as IVT_fp_correction.py (checked row for row by tests/compare_fpcorr.py):
   * column 19 = max(0, percent_modified - 100 * fp), fp from the error table for the site's
@@ -173,6 +178,7 @@ def read_sites(path):
                  start=col(1).cast(pl.Int64).to_numpy(),
                  cov=col(9).cast(pl.Int64).to_numpy(),
                  pct=col(10).cast(pl.Float64).to_numpy(),
+                 nmod=col(11).cast(pl.Int64).to_numpy(),
                  chrom_codes=chrom_codes, chroms=[str(c) for c in chroms],
                  mod_codes=mod_codes, mods=[str(m) for m in mods])
     if len(sites['start']) != len(lines):
@@ -180,15 +186,28 @@ def read_sites(path):
     return lines, sites
 
 
-def write_sites(lines, keep, adjusted, path, chunk=2_000_000):
-    """Each kept input line plus column 19 (empty where uncorrected), in input order."""
+def wilson_lb(k, n, z=1.96):
+    """Wilson score lower bound of k / n (0 where n is 0)."""
+    n = np.asarray(n, dtype=np.float64)
+    p = np.divide(k, n, out=np.zeros_like(n), where=n > 0)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        lb = (p + z * z / (2 * n) - z * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / (1 + z * z / n)
+    return np.where(n > 0, lb, 0.0)
+
+
+def write_sites(lines, keep, adjusted, path, extra=None, chunk=2_000_000):
+    """Each kept input line plus column 19 (empty where uncorrected), in input order; with extra =
+    (lower bound in percent, givt_d20 as 1/0/NaN), columns 20 and 21 as well."""
     rows = np.flatnonzero(keep)
     with open(path, 'w') as out:
         for i in range(0, len(rows), chunk):
             part = rows[i:i + chunk].tolist()
-            col19 = ['' if v != v else repr(v) for v in adjusted[part].tolist()]
-            kept = [lines[r] for r in part]
-            out.write('\n'.join(map('\t'.join, zip(kept, col19))))
+            cols = [[lines[r] for r in part], ['' if v != v else repr(v) for v in adjusted[part].tolist()]]
+            if extra is not None:
+                lb, flag = extra
+                cols.append([f'{v:.4f}' for v in lb[part].tolist()])
+                cols.append(['' if v != v else str(int(v)) for v in flag[part].tolist()])
+            out.write('\n'.join(map('\t'.join, zip(*cols))))
             out.write('\n')
 
 
@@ -216,8 +235,8 @@ def gather_kmers(codes, names, start, fasta):
 
 
 def correct(sites, fasta, index, fps, present):
-    """Corrected percent per site (NaN where none) and a reason code per site:
-    0 corrected, 1 no 9mer, 2 centre base mismatch, 3 9mer/mod not in table."""
+    """Corrected percent per site (NaN where none), a reason code per site (0 corrected, 1 no
+    9mer, 2 centre base mismatch, 3 9mer/mod not in table) and the gIVT rate used (NaN where none)."""
     n = len(sites['start'])
     kmers, have = gather_kmers(sites['chrom_codes'], sites['chroms'], sites['start'], fasta)
     kmers = UPPER[kmers]
@@ -236,15 +255,16 @@ def correct(sites, fasta, index, fps, present):
     found = np.zeros(n, dtype=bool)
     found[look] = present[trow[look], code[look]]
 
-    adjusted = np.full(n, np.nan)
-    x = sites['pct'][found] - 100 * fps[trow[found], code[found]]
+    adjusted, rate = np.full(n, np.nan), np.full(n, np.nan)
+    rate[found] = fps[trow[found], code[found]]
+    x = sites['pct'][found] - 100 * rate[found]
     adjusted[found] = np.where(x > 0, x, 0.0)          # gIVT's max(0, x), NaN rate included
 
     reason = np.full(n, 3, dtype=np.int8)
     reason[~have] = 1
     reason[have & ~centre_ok] = 2
     reason[found] = 0
-    return adjusted, reason
+    return adjusted, reason, rate
 
 
 def main():
@@ -258,6 +278,8 @@ def main():
     ap.add_argument('--valid_only', action='store_true', help='drop rows that cannot be corrected (= both --filter_*)')
     ap.add_argument('--filter_kmer', action='store_true', help='drop rows without a 9mer')
     ap.add_argument('--filter_mismatch', action='store_true', help="drop rows whose centre base isn't the mod's base")
+    ap.add_argument('--wilson_columns', action='store_true',
+                    help='add column 20 (95%% Wilson lower bound, percent) and 21 (givt_d20: lower bound >= 100 fp + 20)')
     args = ap.parse_args()
 
     filter_kmer = args.filter_kmer or args.valid_only
@@ -281,14 +303,19 @@ def main():
     log(f"read {len(lines)} sites in {time.time() - t:.1f}s")
 
     t = time.time()
-    adjusted, reason = correct(sites, args.reference, index, fps, present)
+    adjusted, reason, rate = correct(sites, args.reference, index, fps, present)
     log(f"corrected in {time.time() - t:.1f}s")
 
     drop = ((reason == 1) & filter_kmer) | ((reason == 2) & filter_mismatch) | ((reason == 3) & args.valid_only)
     keep = ~drop & (sites['cov'] >= args.min_coverage)
+    extra = None
+    if args.wilson_columns:
+        lb = 100 * wilson_lb(sites['nmod'], sites['cov'])
+        with np.errstate(invalid='ignore'):
+            extra = (lb, np.where(np.isfinite(rate), (lb >= 100 * rate + 20).astype(float), np.nan))
 
     t = time.time()
-    write_sites(lines, keep, adjusted, args.outpath)
+    write_sites(lines, keep, adjusted, args.outpath, extra)
     log(f"wrote {int(keep.sum())} rows in {time.time() - t:.1f}s")
 
     counts = np.bincount(reason, minlength=4)

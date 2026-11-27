@@ -30,8 +30,8 @@ process DORADO_BASECALLER {
         --recursive \\
         --device ${params.dorado_device} \\
         ${mods} \\
-        ${params.emit_moves ? '--emit-moves' : ''} \\
-        ${params.estimate_poly_a ? '--estimate-poly-a' : ''} \\
+        ${params.emit_moves.toString() == 'true' ? '--emit-moves' : ''} \\
+        ${params.estimate_poly_a.toString() == 'true' ? '--estimate-poly-a' : ''} \\
         ${params.dorado_args} \\
         > ${meta.run_id}.ubam.bam
 
