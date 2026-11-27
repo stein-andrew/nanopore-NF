@@ -39,6 +39,14 @@ Options added 27 Nov (without them every output is byte-identical to the version
   --fail-as-canonical   for the calls pileups: depth N_valid + N_fail, percent modified 100 N_mod / (N_valid + N_fail)
                         (cmp_rules.read_pileup), for the --min-valid floor, both read sets and the occupancy shift.
   --calls-threshold X   stop unless every calls pileup's summary.txt shows fixed threshold X for A, C, G and T.
+  --shared-strata       also group by a unique-read stratum shared by the two --model runs: per sample, the mean
+                        of the two models' unique-read fractions (each from its own no-filter pair, at every site
+                        either model covers), so both models' calls are split on the same positions ('not covered by
+                        both models' where one model's all-reads pileup has no valid read there). The per-model
+                        grouping stays. stratum_moves.tsv: per sample, sites in both models' universes (all reads),
+                        how many have a different own stratum in the two models, and the share of moving and staying
+                        sites inside each --strata BED (enrichment = moving share / staying share);
+                        stratum_crosstab.tsv: own stratum of the first model x the second.
   With any of these, settings.tsv records the settings.
 """
 import argparse
@@ -60,6 +68,16 @@ import cmp_rules as cr  # noqa: E402
 U_BINS = [-0.01, 0.5, 0.95, 1.01]
 U_LABELS = ['mostly multimapped (<50% unique)', 'partly multimapped (50-95%)', 'unique (>=95%)']
 NO_NF = 'no no-filter coverage'
+SHARED_NONE = 'not covered by both models'
+
+
+def ufrac_at(n_all, n_q, keys):
+    """unique-read fraction at keys from one model's no-filter pair (Series of N_valid by key): MAPQ-40 / all valid
+    reads, capped at 1; NaN where the all-reads pileup has no valid read."""
+    na = n_all.reindex(keys).to_numpy(dtype=float)
+    nq = n_q.reindex(keys).fillna(0).to_numpy(dtype=float)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        return np.clip(np.where(na > 0, nq / na, np.nan), None, 1)
 
 
 def in_intervals(chrom, start0, bed):
@@ -163,6 +181,9 @@ def main():
     ap.add_argument('--calls-q40-dir', help='pileups the MAPQ >= 40 calls come from (default --q40-dir)')
     ap.add_argument('--fail-as-canonical', action='store_true',
                     help='calls pileups: depth N_valid + N_fail, occupancy N_mod / (N_valid + N_fail)')
+    ap.add_argument('--shared-strata', action='store_true',
+                    help='also a unique-read stratum shared by the two models (mean of their fractions); writes '
+                         'stratum_moves.tsv and stratum_crosstab.tsv')
     ap.add_argument('--calls-threshold', type=float,
                     help='check that the calls pileups were made at this fixed threshold for every base')
     ap.add_argument('--ortho-dir')
@@ -201,8 +222,9 @@ def main():
     tk = np.unique(co.keys(truth['chrom'], truth['pos'].to_numpy(), truth['strand'], ids))
     code = co.CODE[a.mod]
 
-    rows = []
+    rows, moves, cross = [], [], []
     for sample in a.sample:
+        prep, nf = {}, {}
         for label, run in models:
             if new_calls:
                 for path, th, mq, what in [(f'{a.all_dir}/{run}/{sample}.bed', 0, None, 'the no-filter all-reads pileup'),
@@ -221,22 +243,53 @@ def main():
             d['pct_q'] = q['pct'].reindex(d['key']).to_numpy()
             if not new_calls:
                 d['ufrac'] = (d['nvalid_q'] / d['nvalid']).clip(upper=1)
-            else:                                   # unique-read fraction from the no-filter pair, at the calls' sites
+            if new_calls or a.shared_strata:        # unique-read fraction from the no-filter pair, at any site
                 n_all = cr.read_pileup(f'{a.all_dir}/{run}/{sample}.bed', code, 1, a.contig_regex, mask)
                 n_q = cr.read_pileup(f'{a.q40_dir}/{run}/{sample}.bed', code, 1, a.contig_regex, mask)
                 n_all = n_all.set_index(co.keys(n_all['chrom'], n_all['pos'].to_numpy(), n_all['strand'], ids))['nvalid']
                 n_q = n_q.set_index(co.keys(n_q['chrom'], n_q['pos'].to_numpy(), n_q['strand'], ids))['nvalid']
                 n_all, n_q = n_all[~n_all.index.duplicated()], n_q[~n_q.index.duplicated()]
-                na = n_all.reindex(d['key']).to_numpy(dtype=float)
-                nq = n_q.reindex(d['key']).fillna(0).to_numpy(dtype=float)
-                with np.errstate(divide='ignore', invalid='ignore'):
-                    d['ufrac'] = np.clip(np.where(na > 0, nq / na, np.nan), None, 1)
+                if new_calls:
+                    d['ufrac'] = ufrac_at(n_all, n_q, d['key'])
+                if a.shared_strata:
+                    nf[label] = (n_all, n_q)
                 del n_all, n_q
             d['in_truth'] = np.isin(d['key'], tk)
             d['u_stratum'] = pd.cut(d['ufrac'], U_BINS, labels=U_LABELS).astype(str)
             if new_calls:
                 d.loc[d['ufrac'].isna(), 'u_stratum'] = NO_NF
+            prep[label] = d
+        if a.shared_strata:                         # one stratum per site: mean of the models' fractions
+            for label, _ in models:
+                d = prep[label]
+                u = np.column_stack([ufrac_at(*nf[m], d['key']) for m, _ in models])
+                us = pd.cut(pd.Series(u.mean(axis=1)), U_BINS, labels=U_LABELS).astype(str).to_numpy()
+                us[np.isnan(u).any(axis=1)] = SHARED_NONE
+                d['u_shared'] = us
+            (m1_, _), (m2_, _) = models[0], models[1]
+            x_, y_ = prep[m1_], prep[m2_]
+            both, ix, iy = np.intersect1d(x_['key'].to_numpy(), y_['key'].to_numpy(), return_indices=True)
+            sx, sy = x_['u_stratum'].to_numpy()[ix], y_['u_stratum'].to_numpy()[iy]
+            ct = pd.crosstab(pd.Series(sx, name=f'stratum_{m1_}'), pd.Series(sy, name=f'stratum_{m2_}'))
+            for (r1, r2), n in ct.stack().items():
+                cross.append({'sample': sample, f'stratum_{m1_}': r1, f'stratum_{m2_}': r2, 'sites': int(n)})
+            moving = sx != sy
+            mv = {'sample': sample, 'sites_in_both_universes': len(both), 'moving': int(moving.sum()),
+                  'moving_frac': moving.mean() if len(both) else np.nan}
+            ch_, st_ = x_['chrom'].to_numpy()[ix], x_['start'].to_numpy()[ix]
+            for name, bed in strata:
+                inside = in_intervals(ch_, st_, bed)
+                fm = inside[moving].mean() if moving.any() else np.nan
+                fs = inside[~moving].mean() if (~moving).any() else np.nan
+                mv.update({f'moving_in {name}': int(inside[moving].sum()), f'moving_frac_in {name}': fm,
+                           f'staying_frac_in {name}': fs, f'enrichment {name}': fm / fs if fs else np.nan})
+            moves.append(mv)
+            del nf
+        for label, run in models:
+            d = prep.pop(label)
             groupings = [('unique-read fraction', d['u_stratum'].to_numpy())]
+            if a.shared_strata:
+                groupings.append(('unique-read fraction (shared)', d['u_shared'].to_numpy()))
             for name, bed in strata:
                 inside = in_intervals(d['chrom'].to_numpy(), d['start'].to_numpy(), bed)
                 groupings.append((name, np.where(inside, f'in {name}', f'outside {name}')))
@@ -264,13 +317,16 @@ def main():
                   + ', '.join(f'{k.split(" (")[0]} {v:,}' for k, v in d['u_stratum'].value_counts().items()), file=sys.stderr)
     S = pd.DataFrame(rows)
     S.to_csv(f'{a.out_dir}/strata.tsv', sep='\t', index=False, float_format='%.4g')
-    if new_calls or a.partition or a.truth_set:
+    if a.shared_strata:
+        pd.DataFrame(moves).to_csv(f'{a.out_dir}/stratum_moves.tsv', sep='\t', index=False, float_format='%.4g')
+        pd.DataFrame(cross).to_csv(f'{a.out_dir}/stratum_crosstab.tsv', sep='\t', index=False)
+    if new_calls or a.partition or a.truth_set or a.shared_strata:
         cfg = [('mod', a.mod), ('truth_set', 'from --truth-tsv' if a.truth_tsv else st),
                ('strata_all_dir', a.all_dir), ('strata_q40_dir', a.q40_dir), ('calls_all_dir', calls_all),
                ('calls_q40_dir', calls_q40), ('fail_as_canonical', a.fail_as_canonical),
                ('calls_threshold', '' if a.calls_threshold is None else a.calls_threshold),
                ('min_valid', a.min_valid), ('pct', a.pct), ('mask_bed', a.mask_bed or ''),
-               ('contig_regex', a.contig_regex)] + [(f'strata:{n}', p) for n, p in cr.pairs(a.strata)] \
+               ('contig_regex', a.contig_regex), ('shared_strata', a.shared_strata)] + [(f'strata:{n}', p) for n, p in cr.pairs(a.strata)] \
             + [(f'partition:{n}', p) for n, p in cr.pairs(a.partition)] + [(f'model:{n}', r) for n, r in models]
         pd.DataFrame(cfg, columns=['setting', 'value']).to_csv(f'{a.out_dir}/settings.tsv', sep='\t', index=False)
 
@@ -283,7 +339,7 @@ def main():
     G.to_csv(f'{a.out_dir}/gaps.tsv', sep='\t', index=False, float_format='%.4g')
 
     groups = [x for x in S['grouping'].unique() if x != 'all sites']
-    orders = {'unique-read fraction': U_LABELS + [NO_NF]}
+    orders = {'unique-read fraction': U_LABELS + [NO_NF], 'unique-read fraction (shared)': U_LABELS + [SHARED_NONE]}
     for name, _, order in partitions:
         if order:
             orders[name] = order + ['unlabelled']

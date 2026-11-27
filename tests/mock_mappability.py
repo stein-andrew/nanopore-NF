@@ -37,6 +37,7 @@ CONTIGS = {'chr1': 6000, 'chr2': 4000}
 U_BINS = [(-0.01, 0.5, 'mostly multimapped (<50% unique)'), (0.5, 0.95, 'partly multimapped (50-95%)'),
           (0.95, 1.01, 'unique (>=95%)')]
 NO_NF = 'no no-filter coverage'
+SHARED_NONE = 'not covered by both models'
 FAILS = []
 
 
@@ -157,12 +158,21 @@ def partition_table(path):
     return lab
 
 
-def expected_rows(w, calls_all, calls_q40, fail_canonical, new_calls, lowmap, part, min_valid=20, pct=20):
+def expected_rows(w, calls_all, calls_q40, fail_canonical, new_calls, lowmap, part, min_valid=20, pct=20, shared=False):
     truth = {(l.split('\t')[0], int(l.split('\t')[1]) - 1, l.rstrip('\n').split('\t')[2])
              for l in list(open(f'{w}/truth.tsv'))[1:]}
     iv = [tuple(l.split('\t')[:3]) for l in open(lowmap)]
-    rows = {}
+    rows, moves = {}, {}
     for smp in SAMPLES:
+        nf = {lab: (read_bed(f'{w}/nf_all/{r}/{smp}.bed'), read_bed(f'{w}/nf_q40/{r}/{smp}.bed')) for lab, r in RUNS.items()}
+
+        def ufm(lab, k):
+            na = nf[lab][0].get(k, (0, 0))[0]
+            return min(nf[lab][1].get(k, (0, 0))[0] / na, 1) if na > 0 else float('nan')
+
+        def stratum(u):
+            return next(l for lo, hi, l in U_BINS if lo < u <= hi)
+        own = {}
         for label, run in RUNS.items():
             A = read_bed(f'{w}/{calls_all}/{run}/{smp}.bed', fail_canonical)
             Q = read_bed(f'{w}/{calls_q40}/{run}/{smp}.bed', fail_canonical)
@@ -181,9 +191,13 @@ def expected_rows(w, calls_all, calls_q40, fail_canonical, new_calls, lowmap, pa
                 inlow = any(k[0] == c and int(a) <= k[1] < int(b) for c, a, b in iv)
                 g = {'unique-read fraction': us, 'low': 'in low' if inlow else 'outside low',
                      'region': part.get((k[0], k[2], k[1]), 'unlabelled'), 'all sites': 'all sites'}
+                if shared:
+                    uu = [ufm(lab, k) for lab in RUNS]
+                    g['unique-read fraction (shared)'] = SHARED_NONE if any(x != x for x in uu) else stratum(sum(uu) / 2)
+                own.setdefault(label, {})[k] = (us, inlow)
                 sites.append(dict(k=k, n=n, p=p, nq=nq, pq=pq, t=(k[0], k[1], k[2]) in truth, g=g))
             for reads in ['all reads', 'MAPQ >= 40']:
-                for gname in ['unique-read fraction', 'low', 'region', 'all sites']:
+                for gname in ['unique-read fraction', 'low', 'region', 'all sites'] + (['unique-read fraction (shared)'] if shared else []):
                     for s in {x['g'][gname] for x in sites}:
                         sel = [x for x in sites if x['g'][gname] == s and (reads == 'all reads' or x['nq'] >= min_valid)]
                         called = [x for x in sel if (x['p'] if reads == 'all reads' else x['pq']) >= pct]
@@ -195,7 +209,16 @@ def expected_rows(w, calls_all, calls_q40, fail_canonical, new_calls, lowmap, pa
                             recall=sum(1 for x in ts if (x['p'] if reads == 'all reads' else x['pq']) >= pct) / len(ts)
                             if ts else float('nan'),
                             median_pct_shift_at_calls=float(np.median(sh)) if sh else float('nan'))
-    return rows
+        if shared:
+            (l1, o1), (l2, o2) = list(own.items())
+            both = [k for k in o1 if k in o2]
+            mv = [k for k in both if o1[k][0] != o2[k][0]]
+            st = [k for k in both if o1[k][0] == o2[k][0]]
+            fm = sum(o1[k][1] for k in mv) / len(mv) if mv else float('nan')
+            fs = sum(o1[k][1] for k in st) / len(st) if st else float('nan')
+            moves[smp] = {'sites_in_both_universes': len(both), 'moving': len(mv), 'moving_frac_in low': fm,
+                          'staying_frac_in low': fs}
+    return (rows, moves) if shared else rows
 
 
 def compare(tsv, rows, what):
@@ -338,6 +361,27 @@ def main():
         nn = sum(1 for k, v in rows.items() if k[4] == NO_NF and v['covered'])
         ok(nn > 0, f"definition 2: 'no no-filter coverage' rows present ({nn})")
         ok(os.path.exists(f'{w}/def2/settings.tsv'), 'settings.tsv written')
+
+    # 3b. shared unique-read strata, no-filter and definition-2 calls
+    for tag, extra, args in [('shared', ('nf_all', 'nf_q40', False, False), []),
+                             ('shared_def2', ('f070_all', 'f070_q40', True, True), d2)]:
+        p = run(base_args(new, w, f'{w}/{tag}') + strata + ['--partition', f'region={w}/regions.bed.gz', '--shared-strata'] + args)
+        ok(p.returncode == 0, f'--shared-strata run ({tag})' + (': ' + p.stderr[-400:] if p.returncode else ''))
+        if p.returncode:
+            continue
+        rows, moves = expected_rows(w, *extra, f'{w}/lowmap.bed', part, shared=True)
+        compare(f'{w}/{tag}/strata.tsv', rows, f'--shared-strata ({tag}), all groupings')
+        import csv
+        got = {r['sample']: r for r in csv.DictReader(open(f'{w}/{tag}/stratum_moves.tsv'), delimiter='\t')}
+        bad = [(smp, f) for smp, e in moves.items() for f, v in e.items()
+               if abs(float(got[smp][f]) - v) > 1e-3 * max(1, abs(v))]
+        ok(not bad, f'stratum_moves.tsv ({tag}): {sum(e["moving"] for e in moves.values())} moving sites recomputed, '
+           f'{len(bad)} mismatches {bad[:3]}')
+        if tag == 'shared':
+            prev = [r for r in csv.DictReader(open(f'{w}/part/strata.tsv'), delimiter='\t')]
+            now = [r for r in csv.DictReader(open(f'{w}/shared/strata.tsv'), delimiter='\t')
+                   if r['grouping'] != 'unique-read fraction (shared)']
+            ok(prev == now, 'adding --shared-strata leaves every other row unchanged')
 
     # 4. refusals
     p = run(base_args(new, w, f'{w}/bad1') + ['--partition', f'r={w}/regions_overlap.bed'])
