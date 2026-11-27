@@ -9,7 +9,11 @@
 # counts.tsv         level, feature, chrom, pos, strand, base, call_code, n   (passing calls only)
 # --fail-canonical   calls that failed their threshold count as canonical calls ('-') instead of
 #                    being left out, matching MOD_STAGES with params.mods_fail_canonical (so the
-#                    'all' level still reproduces the staged pileup's Nvalid_cov and Nmod)
+#                    'all' level still reproduces the staged pileup's Nvalid_cov and Nmod). Their
+#                    base is written as '*' (any): modkit pileup counts a failed call in Nfail
+#                    whatever the read's base, so a failed call on a read with another base there
+#                    is in Nvalid_cov + Nfail too (a passing one is Ndiff); feature_mods.py counts
+#                    '*' calls as canonical for the site's own base.
 #   base             the read's base at the site (canonical_base): a read whose base differs
 #                    from the reference's is a different-base read in modkit pileup (Ndiff),
 #                    not valid coverage, so downstream only calls on the mod's own base count
@@ -56,10 +60,10 @@ NR == 1 {
     next
 }
 {
-    code = $cc
-    if ($fl == "true") { failed++; if (!fc) next; code = "-" }
+    code = $cc; b = $cb
+    if ($fl == "true") { failed++; if (!fc) next; code = "-"; b = "*" }
     else if ($fl != "false") { msg = "unrecognised fail value \"" $fl "\" on line " NR; exit }
-    k = $ch OFS $p OFS $sc OFS $cb OFS code
+    k = $ch OFS $p OFS $sc OFS b OFS code
     all[k]++
     if ($r in iso)  n_iso[iso[$r] OFS k]++
     if ($r in gene) n_gene[gene[$r] OFS k]++

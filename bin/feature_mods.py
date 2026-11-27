@@ -20,7 +20,9 @@ levels, from bin/mod_feature_counts.sh's counts, per (isoform or gene, site, mod
             9mer, mod code and thresholds as the sample-level stage)
 In the BEDs: n_valid >= --min-cov and corrected percent >= --min-pct, the final-stage rule
 applied per feature. With mod_feature_counts.sh --fail-canonical, n_valid includes the calls
-that failed their threshold (counted as canonical), as in MOD_STAGES with mods_fail_canonical.
+that failed their threshold (counted as canonical), as in MOD_STAGES with mods_fail_canonical;
+like modkit pileup's Nfail, that includes failed calls on reads with another base there (base
+'*' in the counts), which count toward the site's own base.
 --wilson-columns adds two reporting columns to feature_mods.tsv.gz: percent_wilson_lb95 (95%
 Wilson lower bound of n_mod / n_valid) and givt_d20 (1 when that bound is >= 100 * the gIVT
 rate + 20, 0 when not, empty where gIVT has no rate). They do not change the final rule.
@@ -174,6 +176,13 @@ def cmd_levels(args):
     bases = pl.DataFrame({'mod': list(MOD_TO_BASE), 'base': list(MOD_TO_BASE.values())})
     cand = cand.join(bases, on='mod', how='left')        # candidates are gIVT-corrected, so every code maps
     counts = read_counts(args.counts)
+    # failed calls counted as canonical (--fail-canonical) have base '*': whatever the read's base,
+    # they belong to the site's own base, as in pileup's Nfail
+    anyb = counts.filter(pl.col('base') == '*')
+    if anyb.height:
+        site_base = cand.select(SITE + ['base']).unique()
+        anyb = anyb.drop('base').join(site_base, on=SITE, how='inner').select(counts.columns)
+        counts = pl.concat([counts.filter(pl.col('base') != '*'), anyb])
 
     # valid coverage per site counts only calls on the mod's own base, as pileup does
     valid = counts.group_by(['level', 'feature'] + SITE + ['base']).agg(pl.col('n').sum().alias('n_valid'))
