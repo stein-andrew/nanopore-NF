@@ -37,6 +37,7 @@ Writes:
 """
 
 import argparse
+import gzip
 import os
 import re
 import sys
@@ -59,7 +60,12 @@ COUNT_NAMES = ['level', 'feature', 'chrom', 'pos', 'strand', 'base', 'code', 'n'
 
 
 def read_candidates(path, pct):
-    df = read_tsv(path, [f'c{i}' for i in range(19)])
+    # 19 columns; 21 with mods_wilson_columns (20 = Wilson lower bound, 21 = givt_d20), which are not used here
+    width = 19
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        with (gzip.open(path, 'rt') if path.endswith('.gz') else open(path)) as fh:
+            width = fh.readline().count('\t') + 1
+    df = read_tsv(path, [f'c{i}' for i in range(21 if width == 21 else 19)])
     df = df.with_columns(pl.col('c18').cast(pl.Float64, strict=False).alias('sample_pct_fpcorr'))
     df = df.filter(pl.col('sample_pct_fpcorr') >= pct)
     return df.select(pl.col('c0').alias('chrom'), pl.col('c1').cast(pl.Int64).alias('pos'),
@@ -259,7 +265,7 @@ def main():
     sub = ap.add_subparsers(dest='cmd', required=True)
     for name in ('positions', 'levels'):
         s = sub.add_parser(name)
-        s.add_argument('--candidates', required=True, help='sample-level gIVT stage: S.cov20_fpcorr.bed (19 columns)')
+        s.add_argument('--candidates', required=True, help='sample-level gIVT stage: S.cov20_fpcorr.bed (19 columns, or 21 with the Wilson columns)')
         s.add_argument('--candidate-pct', type=float, required=True, help='candidates: sample-level corrected percent >= this')
         if name == 'levels':
             s.add_argument('--counts', required=True, help='bin/mod_feature_counts.sh output')
