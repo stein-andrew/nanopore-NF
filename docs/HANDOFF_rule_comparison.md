@@ -194,24 +194,61 @@ columns only.
 
 ### Definition 3 vs 4 beyond m6A (24 Nov; v5.2, MAPQ >= 40, pipeline thresholds)
 
-Sweeps `$OUT/wilsonbg_pthrq40_{dropfail,failcanon}_C_d212_v52_{Inosine,Psi}` (fpcorr column 0.81 for inosine, 0.92 for
-Psi); calls and repeat for the codes without a usable map in `$OUT/summaries/{calls,repeat}_def3_def4_other_mods.tsv`.
+Sweeps `$OUT/wilsonbg_pthrq40_{dropfail,failcanon}_C_d212_v52_{Inosine,Psi,m5C}` (fpcorr column 0.81 for inosine, 0.92
+for Psi, 0.83 for m5C; table `$OUT/summaries/def3_def4_m5C.txt`, script `def3_def4_report.py`); calls and repeat for
+the 2'-OMe codes in `$OUT/summaries/{calls,repeat}_def3_def4_other_mods.tsv`.
+
+**Decision (user, 26 Nov): definition 4 for all modifications.** Validation status by code: m6A (four maps), inosine
+(SLIC-seq) and Psi (BID∩PRAISE, weak: about 20 true calls) were scored; **m5C and the 2'-OMe codes (Am, Cm, Gm, Um) are
+not validated by any map**: m5C's UBS-seq gives too few true calls (13-25 per run, precision about 0.5% under both
+definitions) to validate either, and the 2'-OMe codes have no map. Definition 4 is applied to them by extension only.
 
 - Inosine (SLIC-seq_2of3; 447 sites covered under 3, 569 under 4): pct_20 under 4 makes 789 calls per run, 121 true,
   precision 0.111-0.185, against 1,337, 110 and 0.053-0.108 under 3. No call at >= 100 reads is a SLIC-seq site under
   either definition (precision 0 at 100-299 and 300+), as before.
 - Psi (BID∩PRAISE; 117 / 129 sites covered): under 4, 141 calls, 20 true, precision 0.138-0.150, repeat at >= 100
   reads 0.872; under 3, 355, 21, 0.047-0.073, 0.786. Weak evidence: about 20 true calls.
+- m5C (UBS-seq; 686 / 757 of its 2,181 sites covered): pct_20 under 4 makes 2,921 calls per run, 16 true, precision
+  0.005-0.006, recall 0.019-0.022; under 3, 5,296, 25, 0.004-0.006, 0.033-0.041. fpcorr_pct20: 1,930, 13, 0.006-0.008
+  vs 4,164, 21, 0.005-0.006. Neither definition finds UBS-seq sites (precision about 0.5% under both); very weak
+  evidence, 13-25 true calls.
 - m5C, Am, Cm, Um, Gm (calls only): definition 4 cuts pct_20 calls per run to m5C 2,921 (from 5,296), Am 28 (88),
-  Cm 204 (469), Um 264 (929), Gm 51 (171). Repeat below 100 reads is lower under 4 for every code (e.g. m5C 0.406 vs
-  0.557); at >= 100 reads it is mixed and rests on few calls under 4 (Am 2, Cm 9, Gm 5, Um 19 per run; m5C 167).
+  Cm 204 (469), Um 264 (929), Gm 51 (171). Repeat below 100 reads is lower under 4 for every one of these codes (next
+  point); at >= 100 reads it is mixed and rests on few calls under 4 (Am 2, Cm 9, Gm 5, Um 19 per run; m5C 167).
+- Between-run agreement below 100 reads (pct_20 repeat, mean of the three run pairs, definition 4 vs 3): lower under 4
+  for every modification except m6A. Inosine 0.444 vs 0.522, Psi 0.426 vs 0.472, m5C 0.406 vs 0.557, Am 0.224 vs 0.322,
+  Cm 0.252 vs 0.395, Gm 0.357 vs 0.416, Um 0.254 vs 0.454; m6A goes up, 0.848 vs 0.832 (`between_runs.tsv` of the
+  pthrq40 sweeps, the same for every map; 2'-OMe codes from `repeat_def3_def4_other_mods.tsv`). The 2'-OMe codes (Am, Cm,
+  Gm, Um) have no map to check precision on; m5C's (UBS-seq, above) gives too few true calls to tell the definitions apart.
 
-Design for the switch, branch `mods-fail-canonical` (afcb562, not merged): `mods_fail_canonical` (default true) rewrites
-the pileup counts before staging (`mod_stages.sh failcanon`: Nvalid_cov += Nfail, percent = Nmod / Nvalid_cov; raw.bed
-keeps modkit's counts) and counts failed calls as canonical in MOD_FEATURES (`mod_feature_counts.sh --fail-canonical`);
+The switch, branch `mods-fail-canonical`, merged to main 26 Nov: `mods_fail_canonical` (default true) rewrites the
+pileup counts before staging (`mod_stages.sh failcanon`: Nvalid_cov += Nfail, percent = Nmod / Nvalid_cov; raw.bed keeps
+modkit's counts) and counts failed calls as canonical in MOD_FEATURES (`mod_feature_counts.sh --fail-canonical`);
 `mods_wilson_columns` (default false) adds column 20 (95% Wilson lower bound) and 21 (givt_d20, using the threshold-matched
-gIVT column) to the gIVT stages and `percent_wilson_lb95`, `givt_d20` to feature_mods.tsv.gz. Checked on ST1932 chr22 and
-a stub run (200 processes, 0 failed); not run on a cohort.
+gIVT column) to the gIVT stages and `percent_wilson_lb95`, `givt_d20` to feature_mods.tsv.gz. Same branch: the boolean
+params are string-safe (`--mods_unique_only false` from the command line used to count as true), and
+`conf/explorer.config` restricts CPU tasks to AVX2 nodes (`params.slurm_cpu_constraint`; a run's broken nodes go in
+`params.slurm_exclude`, not `process.clusterOptions`, which would replace the constraint).
+
+Real runs on test-chr22 (3 samples, fixed pipeline thresholds; `/scratch/stein.an/ont-pipeline/test-chr22-failcanon/`,
+`check_failcanon.txt`): main vs branch with both flags false: every output file identical except logs and the recorded
+sample-probs estimate (those tasks reran, see below; the thresholds are fixed). Both flags true: the coverage stage equals
+`cmp_rules.read_pileup(fail_as_canonical=True)` on raw.bed after the base check, 0 mismatches in Nvalid, Nmod and percent
+for every code and sample; MOD_FEATURES pileup agreement 100% in all nine sample x run pairs; Wilson bound and givt_d20
+match an independent computation. Definition 4 vs 3 on chr22: cov20 rows x1.06-1.07, cov20_fpcorr_pct20 m6A x0.92, Ino
+x0.68, m5C x0.31, the 2'-OMe codes and Psi x0.10-0.20. Two bugs the real runs found, fixed before the merge:
+feature_mods.py rejected the 21-column stage (867d103), and **modkit pileup puts a failed call in Nfail whatever the read's
+base at the site** (a passing call on another base is Ndiff), so definition 4 (Nvalid + Nfail, here and in the rule
+comparison) includes failed calls on reads with another base, about 0.5% of depth at chr22 candidate sites; MOD_FEATURES
+now counts them the same way (8b32f32).
+
+Resume caveat (Nextflow 26.04): a task's hash includes the bin scripts it calls, by path, size and date, so a run from a
+worktree reruns every bin-using task, and in the main checkout any task whose bin script was edited reruns.
+
+Cohort rerun, prepared 26 Nov, not launched: `cohort-v1/params_v3.yaml` (params_v2 + `mods_fail_canonical: true`, outdir
+`results-v3`), from `cohort-v1` with `-resume 489ff548-3100-46cd-867a-566c928e2741`. Expected to rerun MOD_STAGES and
+MOD_FEATURES (15 each; script and bin changes, including the mods-filter-mismatch base check) and COHORT_MATRICES; the rest
+cached (all 200 work folders of the v2 run present on 26 Nov).
 
 ### MOD_STAGES reference-base check (24 Nov; cohort-v2 results, `cohort-v1/results-v2`)
 
@@ -261,6 +298,18 @@ processes, 0 failed). The cohort is not rerun for it; it goes in with the next c
      20 of 23 tensors have other values at the same sizes, i.e. retrained weights, same architecture). `pseU_2OmeU`:
      run A used v1, the release has v2. For the short report: run A's m6A, inosine and 2'-OMe-A results are the
      released model's; its m5C and 2'-OMe-C results come from a pre-release m5C model that the release replaced.
+   - 26 Nov, runs D, E, Cx (approved; all on one GPU type, A100 80GB, `$B/explorer_ubam/`): the tower's driver is
+     550.90.07 (CUDA 12.4), too old for Dorado 2.2.0 (bundles cudart 12.8.57); Explorer d1028/d1029 have 570.86.15 (CUDA
+     12.8), as do the H200s. The image's v5.2.0 set is byte-identical to run C's models and its v6.0.0 base and 2OmeG@v1 to
+     run A's, so E vs C differs only in Dorado and GPU. Cx = Dorado 2.1.2 + run C's models on the same A100s, 09_09 only
+     (GPU effect). One benchmark file for all three, `bench_explorer_a100.csv` (Dorado 2.2.0, both base models; job
+     12178278 on d1029, NVIDIA A100-SXM4-80GB, driver 570.86.15). Basecalls: array 12178280 (D, E: multigpu, 4 GPUs, two
+     at a time) and Cx via `submit_cx_when_free.sh` (the gpu QOS allows 1 GPU per job); each task records node, GPU model,
+     driver and dorado's batch sizes in `<run>/<sample>.gpus.txt`. Then `chain_align_pg.sh`: `align_runs.sh` (basecall.nf
+     ubam rows, as run C) and `compare_pg.sh` (minimap2/samtools @PG lines vs run C; stop if they differ). Pileups for the
+     comparisons: no filter and definition 2 (fixed 0.70) at MAPQ 40 for D, E, Cx and (definition 2, missing) A; definition
+     4 (pipeline thresholds) for E. The pod5 subsets stay on /scratch only (user's decision; /projects had 216 GB free for
+     264 GB); their md5s: `$B/pod5_durable_check/scratch_pod5.md5`.
 5. **Pipeline (after the user decides):** report the Wilson lower bound as a column in the site tables, and optionally a
    `site_rule` parameter (`pct` default, `wilson` opt-in with target and confidence). Find where the 20% rule is applied
    (`conf/rna.config`, `bin/mod_stages.sh`, `bin/*.py`) and propose a patch before editing.
