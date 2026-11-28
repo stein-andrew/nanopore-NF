@@ -309,6 +309,13 @@ processes, 0 failed). The cohort is not rerun for it; it goes in with the next c
      BAM headers record the folder name, not the content: A's @PG `--modified-bases-models` and @RG `modbase_models`
      say `pseU_2OmeU@v1` (all four samples), D's say `@v2`. **So A and D both ran pseU_2OmeU@v2; no run here used the
      registry's v1.** Measuring v2 vs v1 needs a new basecall with the registry v1 (GPU).
+     **`custom_models/RNA004_SUP_v6.0.0_v2MODS/MANIFEST.tsv`** (27 Nov; sha256 95b8df1f...; folders not renamed): per
+     folder and file the sha256, size, real identity, the released model's sha256 (Dorado 2.2.0 image
+     `/opt/models/SHA256SUMS`, i.e. registry downloads) and, for the pseU folder, the registry v1's sha256.
+     `inosine_m6A_2OmeA@v2` folder = released @v2 (24/24); `m5C_2OmeC@v2` folder = pre-release (22 Sep 2026; 21/24
+     files differ from the released @v2 of 3 Nov 2026); `pseU_2OmeU@v1` folder = released `pseU_2OmeU@v2` (24/24),
+     not the registry @v1 (21/24 differ). The tower-bundle copy (`/scratch/stein.an/tower_bundle/models/`) has the
+     same files and no manifest.
    - 26 Nov, runs D, E, Cx (approved; all on one GPU type, A100 80GB, `$B/explorer_ubam/`): the tower's driver is
      550.90.07 (CUDA 12.4), too old for Dorado 2.2.0 (bundles cudart 12.8.57); Explorer d1028/d1029 have 570.86.15 (CUDA
      12.8), as do the H200s. The image's v5.2.0 set is byte-identical to run C's models and its v6.0.0 base and 2OmeG@v1 to
@@ -388,6 +395,23 @@ processes, 0 failed). The cohort is not rerun for it; it goes in with the next c
      3' UTR rest -6.6 / -5.7 / -6.5 / sparse, CDS -5.1 / -3.4 / -4.8 / sparse, stop window -2.6 / -2.1 / -3.8 / -4.4.
      Per-run ranges are wide (e.g. 3' UTR rest no filter 20-49: -27.7 to -9.0) but stay below 0 for the 3' UTR rest.
      Each model's own depth gives the same picture. Summary: `region_depth/summary/report.txt`.
+   - 27 Nov, 3' UTR context of m6A calls (`mappability/utr_features/`; `code/utr_features.py` 7d81dccb, with background
+     `code/utr_features_bg.py` c200e183, report `utr_report_bg.py` 91afee59; results `bg/summary/report.txt`). Calls
+     from all reads, v6 = A, v5.2 = C, positions >= 20 reads in both models, 3' UTR rest (stop window also reported).
+     Groups: v6-only, v5.2-only, both, and a background of positions called by neither, 5x the called positions per
+     region and depth band (mean of both models' depths), seed 0; the called rows equal the first run's (checked).
+     Features from the reference on the RNA strand: A run containing the site, A share in 21 nt, nearest AAUAAA/AUUAAA
+     within +/- 1 kb (any occurrence, not annotated poly(A) sites; the site inside a hexamer counted apart), distance
+     along the transcript to the GENCODE basic 3' end. Pooled over three runs, no filter / definition 2:
+     A run >= 4: v6-only 0.346 / 0.241, v5.2-only 0.051 / 0.026, both 0.022 / 0.020, background 0.141 / 0.141
+     (v6-only vs background OR 3.2 / 1.9, vs v5.2-only 9.8 / 11.8, same direction in every run); site inside a PAS
+     hexamer 0.126 / 0.089, 0.015 / 0.006, 0.004 / 0.003, 0.050 / 0.050; nearest PAS 1-50 nt away, not overlapping,
+     0.219 / 0.187, 0.282 / 0.134, 0.109 / 0.108, 0.214 / 0.211 (v6-only vs background OR 1.03 / 0.86). Median
+     distance to the 3' end 319 / 337, 310 / 411, 386 / 384, 396 / 396 nt. Share in GLORI 0.017 / 0.123, 0.030 /
+     0.148, 0.655 / 0.789, 0.002 / 0.002; DRACH 0.031 / 0.179, 0.056 / 0.240, 0.754 / 0.905, 0.062 / 0.061.
+     **v6-only 3' UTR calls are A-rich (more than background, far more than v5.2-only, which is depleted), and their
+     excess near AAUAAA/AUUAAA is the site lying inside the hexamer; a PAS nearby without overlap is no more frequent
+     than background.** The stop window shows the same pattern.
 5. **Pipeline (after the user decides):** report the Wilson lower bound as a column in the site tables, and optionally a
    `site_rule` parameter (`pct` default, `wilson` opt-in with target and confidence). Find where the 20% rule is applied
    (`conf/rna.config`, `bin/mod_stages.sh`, `bin/*.py`) and propose a patch before editing.
