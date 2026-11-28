@@ -48,7 +48,7 @@ dependencies and typing_extensions 4.16.0 (over conda's 4.12.2), so that switchi
 
 - Same reads, three setups (identical pod5 subsets; aligned BAMs `$B/tower_ubam/out_<run>/bam/GRCh38/<sample>.GRCh38.bam`):
   `A_d212_v6` (Dorado 2.1.2, rna004_sup@v6.0.0 + inosine_m6A_2OmeA@v2, m5C_2OmeC@v2, pseU_2OmeU@v1, 2OmeG@v1; the two v2
-  models came from a pre-release models folder), `C_d212_v52` (Dorado 2.1.2, rna004_130bps_sup@v5.2.0 + four v1 models),
+  models came from a pre-release models folder; its "pseU_2OmeU@v1" is byte-identical to the released @v2, see task 4), `C_d212_v52` (Dorado 2.1.2, rna004_130bps_sup@v5.2.0 + four v1 models),
   `B_d130_v52` (Dorado 1.3.0, same v5.2 models).
 - Samples: `GM12878`, `08_01_25_RNA004_HEK293`, `09_09_25_RNA004_HEK293`, `10_06_25_RNA004_HEK293_CP` (truth maps are HEK293(T), so
   accuracy uses the three HEK293 runs).
@@ -296,8 +296,19 @@ processes, 0 failed). The cohort is not rerun for it; it goes in with the next c
      `inosine_m6A_2OmeA@v2` released = pre-release (24 of 24 files identical); `m5C_2OmeC@v2` released != pre-release
      (21 of 24 files differ: `config.toml` only in `creation_date`, 22 Sep 2026 pre-release vs 3 Nov 2026 released;
      20 of 23 tensors have other values at the same sizes, i.e. retrained weights, same architecture). `pseU_2OmeU`:
-     run A used v1, the release has v2. For the short report: run A's m6A, inosine and 2'-OMe-A results are the
-     released model's; its m5C and 2'-OMe-C results come from a pre-release m5C model that the release replaced.
+     **corrected 27 Nov**: the folder run A used is named `@v1`, but its 24 files are byte-identical (sha256) to the
+     released `rna004_sup@v6.0.0_pseU_2OmeU@v2` in the image (same `creation_date`, 10 Oct 2026), and D vs A gives
+     identical Psi and 2'-OMe-U counts at every site; no run here used a different pseU model for v6.0.0. For the short
+     report: run A's m6A, inosine, 2'-OMe-A, Psi and 2'-OMe-U results are the released models'; its m5C and 2'-OMe-C
+     results come from a pre-release m5C model that the release replaced.
+     **Checked against the registry, 27 Nov** (`model_cmp/pseu_model_check/`): `dorado download` (which fails on a
+     checksum mismatch against its registry) of `rna004_sup@v6.0.0_pseU_2OmeU@v1` with Dorado 2.2.0 and 2.1.2 gives the
+     same 24 files, `creation_date` 15 May 2026; they differ from run A's `@v1` folder in 21 of 24 files (equal:
+     `lstm1.bias_hh_l0`, `lstm2.bias_hh_l0`, `refine_kmer_levels`). The registry download of `@v2` is identical to run
+     A's folder and to the image's `@v2`. Dorado 2.2.0's registry lists `@v1` as outdated; 2.1.2's lists only `@v1`.
+     BAM headers record the folder name, not the content: A's @PG `--modified-bases-models` and @RG `modbase_models`
+     say `pseU_2OmeU@v1` (all four samples), D's say `@v2`. **So A and D both ran pseU_2OmeU@v2; no run here used the
+     registry's v1.** Measuring v2 vs v1 needs a new basecall with the registry v1 (GPU).
    - 26 Nov, runs D, E, Cx (approved; all on one GPU type, A100 80GB, `$B/explorer_ubam/`): the tower's driver is
      550.90.07 (CUDA 12.4), too old for Dorado 2.2.0 (bundles cudart 12.8.57); Explorer d1028/d1029 have 570.86.15 (CUDA
      12.8), as do the H200s. The image's v5.2.0 set is byte-identical to run C's models and its v6.0.0 base and 2OmeG@v1 to
@@ -310,6 +321,73 @@ processes, 0 failed). The cohort is not rerun for it; it goes in with the next c
      comparisons: no filter and definition 2 (fixed 0.70) at MAPQ 40 for D, E, Cx and (definition 2, missing) A; definition
      4 (pipeline thresholds) for E. The pod5 subsets stay on /scratch only (user's decision; /projects had 216 GB free for
      264 GB); their md5s: `$B/pod5_durable_check/scratch_pod5.md5`.
+   - 27 Nov, D, E, Cx done. Every basecall ran on **d1028, 4 x NVIDIA A100-SXM4-80GB, driver 570.86.15** (`<run>/<sample>.gpus.txt`):
+     D = array tasks 12178280_0-3 (Dorado 2.2.0+645d4e4; 43-95 min per sample), E = 12178280_4-7 (2.2.0+645d4e4; 45-133
+     min), Cx = 12186251_8 (2.1.2+8b8fc5d; 96 min). D's four GPUs each logged "Requested batch size 640 exceeds maximum safe
+     estimated batch size 608" (the benchmark file's v6.0.0 entry) and finished without error; E and Cx logged no batch-size
+     warning. Dorado's info log does not print the batch size it used. Alignment: nf-align heads 12199231 (D), 12199232 (E),
+     12199233 (Cx), all `[SUCCESS]`, BAMs in `$B/explorer_ubam/out_<run>/bam/GRCh38/`. `compare_pg.sh`: minimap2 and samtools
+     @PG lines identical to run C's for all 9 BAMs (`$B/explorer_ubam/pg_check.txt`, exit 0). Pileups (MAPQ 40, three
+     HEK293 samples, Cx 09_09 only; jobs in `$B/explorer_ubam/pileup_jobs.txt`): `pileup064_fixed070_q40/<run>`,
+     `pileup064_nofilter_q40_v2/<run>` for D, E, Cx; `pileup064_pipethr_q40/E_d220_v52`.
+   - 27 Nov, comparisons (`/projects/Genometechlab/andrew/rule_comparison/model_cmp/`, scripts in `code/`):
+     **Cx = C and E = Cx = C exactly.** MAPQ-40 pileups byte-identical (`identity.tsv`: no filter and definition 2 for
+     Cx vs C and E vs Cx at 09_09, E vs C at all three HEK293 samples, also definition 4 for E vs C), and every read
+     identical in sequence + qualities, MM/ML and poly(A) length (`readlevel/read_identity.tsv`: 09_09 Cx vs C and E vs Cx,
+     E vs C for the three HEK293 samples and GM12878). Neither the GPU (tower A100 80GB PCIe vs Explorer A100-SXM4-80GB)
+     nor Dorado 2.1.2 vs 2.2.0 changes anything with the v5.2 models. **D vs A** (released vs run A's v6 set, Dorado
+     2.2.0 vs 2.1.2): sequence, qualities and poly(A) identical for every read; MM/ML differ on 93-98% of reads, all from
+     m5C/2'-OMe-C: at >= 20 reads, m6A, inosine, 2'-OMe-A, Psi, 2'-OMe-U and 2'-OMe-G counts are identical at every
+     site, m5C at 68% (no filter) / 83% (definition 2), 2'-OMe-C at 79% / 89% (`D_vs_A_*`, `summary/report.txt`).
+     D vs A m5C at 20% against UBS-seq: no filter, calls 8,049 vs 24,631, precision 0.003 vs 0.002, recall 0.034 vs
+     0.065; definition 2, calls 986 vs 3,576, precision 0.022 vs 0.007, recall 0.026 vs 0.031 (means of three runs).
+     **D vs E** (v6 released vs v5.2, both Dorado 2.2.0), m6A vs GLORI1.0∩2.0 at 20%: no filter, precision 0.352 vs
+     0.483 (-13.1 points), recall 0.778 vs 0.769; definition 2, precision 0.708 vs 0.751 (-4.3), recall 0.760 vs 0.750.
+     The definition-2 precision gap varies by run (-0.3, -9.9, -2.7 points). Inosine vs SLIC-seq_2of3, definition 2:
+     precision 0.303 vs 0.089, recall 0.233 vs 0.226.
+   - 27 Nov, D vs A vs E detail (`model_cmp/summary/detail_report.txt`, `code/detail_report.py` md5 c9562a3a,
+     `code/code_identity.py` 876c73a7, `code/cmp_models_n.py` 50126488). **Per-code identity, every row of the no-filter
+     MAPQ-40 pileups, three HEK293 samples:** D vs A identical for a, 17596, 69426, 17802, 19227, 19229 (share 1.000 in
+     each sample); m and 19228 at 0.914 (0.912-0.917). **m6A, inosine, 2'-OMe-A, Psi, 2'-OMe-U and 2'-OMe-G were
+     therefore not rescored for D: D's results for these codes are run A's** (including the mappability runs, which use
+     A and C). Psi v2 vs v1 cannot be measured from these runs: the released pseU_2OmeU@v2 is the model run A ran.
+     Read level, same reads (1% sample): m5C calls per C base D 0.022 vs A 0.035; 95.8% of D's m5C calls are m5C in A.
+     m5C vs UBS-seq at 20%, one universe for D, A, E: definition 2 precision 0.022 / 0.007 / 0.003, recall 0.025 /
+     0.030 / 0.047; D - A precision +1.1 to +1.8 points, CI excludes 0 in all three runs, but on 19 / 23 / 35 true calls
+     per run. NSUN2-dependent set: 13 / 16 / 24 true calls. Psi (D = A) vs E, definition 2: precision 0.028 vs 0.014
+     (BID∩PRAISE), 0.039 vs 0.020 (PUS-dependent), separated in all three runs, recall equal, 21-31 true calls per run;
+     no filter: not separated.
+   - 27 Nov, between-run repeat at matched call numbers (`model_cmp/repeat_matched/`, `code/matched_repeat.py` md5
+     f39ab9be, report 1c37c199; same MAPQ-40 pileups as `repeat/`; per pair of HEK293 runs and depth stratum, every
+     model calls its top N sites by percent modified, N = the smallest model's pct_20 call count; pct_20 rows reproduce
+     wilson_sweep's between_runs.tsv). Note: wilson_sweep's stratum 'both < 100 reads' is every position not >= 100 in
+     both runs, i.e. **either** run < 100; `repeat_matched` labels it so. Matched repeat, mean of 3 pairs, both >= 100
+     / either < 100: m5C no filter (N 451 / 5,458) D 0.594 / 0.354, A 0.559 / 0.389, E 0.686 / 0.542; m5C definition 2
+     (N 50 / 648) D 0.561 / 0.284, A 0.395 / 0.271, E 0.621 / 0.450; Psi no filter (N 463 / 4,202) v6 0.613 / 0.378,
+     v5.2 0.699 / 0.462; Psi definition 2 (N 53 / 546) v6 0.557 / 0.255, v5.2 0.701 / 0.382. **v5.2 still repeats
+     more at matched N**, so its higher repeat is not just call volume. Random tie-breaking changes repeat by <= 0.004;
+     positions all models cover give the same ordering, within 0.015, except Psi definition 2 >= 100 (v5.2 0.632 vs
+     0.701), which rests on 53 calls. The m5C and Psi runs of D were not redone: D = A for Psi.
+   - 27 Nov, mappability (`/projects/Genometechlab/andrew/rule_comparison/mappability/`; per-model runs in `<mod>_<set>_<def>/`
+     with cmp_mappability.py 95b1fd06, shared-strata runs in `shared/` with eea3276f = branch `mappability-partition`
+     d1782a9, merged into main 27 Nov; `make_transcript_partition.py` e099181e, `mappability_report.py` 28e77dc1; partition
+     `partition/gencode.v47.basic.transcript_regions.bed.gz`). v6 = A, v5.2 = C. Per-model rows of `shared/` are identical
+     to the first runs (12 of 12). Shared strata: 2.3-3.1% of sites in both universes change stratum between the models'
+     own assignments, almost all unique <-> partly multimapped; moving sites are 3.7-6.0x enriched in GIAB low
+     mappability and 2.6-3.6x in GIAB segdups. Under shared strata the precision gaps in the unique stratum equal the
+     all-sites gaps (m6A GLORI no filter -13.5, definition 2 -4.6; inosine +8.4 / +21.2). v6's per-model recall deficit
+     in partly multimapped (-1.7 to -5.3 points for SAC-seq, CIMS, CITS) shrinks to -0.4 to -1.4 under shared strata; in
+     mostly multimapped GLORI and SAC-seq go from -6.7 / -8.2 to -4.2 to -5.6, on 45-85 truth sites (2-4 sites per run).
+     Psi in every stratum and inosine outside the unique stratum rest on <= 21 true calls per run. Summary: `shared/summary/report.txt`, `moves.tsv`.
+   - 27 Nov, region x depth, m6A vs GLORI (`mappability/region_depth/`, `code/region_depth.py` md5 84438739,
+     report 9beb06af, both in `code/MD5`; one depth per site for both models, the mean of their depths; 'all depths' rows equal the
+     cmp_mappability region rows, checked). **The 3' UTR gap is not a depth effect.** Median depth of covered sites:
+     3' UTR rest 32.8, CDS 34.7, stop +/-200 nt 42.2, all sites 35.2 (1.3% of 3' UTR-rest sites at >= 300 reads vs
+     3.9% in CDS). Precision gap v6 - v5.2 per band 20-49 / 50-99 / 100-299 / 300+: no filter, 3' UTR rest -16.7 /
+     -17.2 / -18.7 / -21.7, CDS -8.0 / -6.6 / -6.0 / -5.8, stop window -11.6 / -10.7 / -14.5 / -8.9; definition 2,
+     3' UTR rest -6.6 / -5.7 / -6.5 / sparse, CDS -5.1 / -3.4 / -4.8 / sparse, stop window -2.6 / -2.1 / -3.8 / -4.4.
+     Per-run ranges are wide (e.g. 3' UTR rest no filter 20-49: -27.7 to -9.0) but stay below 0 for the 3' UTR rest.
+     Each model's own depth gives the same picture. Summary: `region_depth/summary/report.txt`.
 5. **Pipeline (after the user decides):** report the Wilson lower bound as a column in the site tables, and optionally a
    `site_rule` parameter (`pct` default, `wilson` opt-in with target and confidence). Find where the 20% rule is applied
    (`conf/rna.config`, `bin/mod_stages.sh`, `bin/*.py`) and propose a patch before editing.
